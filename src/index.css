@@ -1,0 +1,43 @@
+@import "tailwindcss";
+
+@layer base {
+  :root {
+    --bg-base: #0c0e12;
+    --bg-sidebar: #12161c;
+    --bg-card: #181d24;
+    --bg-card-hover: #202731;
+    --border-color: #262f3c;
+    --border-hover: #374355;
+    --text-primary: #f1f5f9;
+    --text-secondary: #94a3b8;
+    --brand-primary: #38bdf8;
+    --brand-primary-hover: #0ea5e9;
+    --brand-accent: #10b981;
+    --brand-accent-hover: #059669;
+  }
+
+  body {
+    font-family: "Microsoft JhengHei", "PingFang TC", "Noto Sans TC", -apple-system, BlinkMacSystemFont, sans-serif;
+    background-color: #0c0e12;
+    color: #e2e8f0;
+  }
+}
+
+/* Custom sleek dark scrollbars for Titanium Clean theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #12161c;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #262f3c;
+  border-radius: 9999px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #374355;
+}
