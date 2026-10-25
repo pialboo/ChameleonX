@@ -19,14 +19,6 @@
     "appId": "com.chameleonx.app",
     "productName": "ChameleonX",
     "compression": "maximum",
-    "publish": [
-      {
-        "provider": "github",
-        "owner": "pialboo",
-        "repo": "ChameleonX",
-        "releaseType": "release"
-      }
-    ],
     "directories": {
       "output": "release"
     },

@@ -2,10 +2,10 @@ name: Release
 
 on:
   push:
-    branches:
-      - main
     tags:
       - 'v*'
+    branches:
+      - main
   workflow_dispatch:
 
 permissions:
@@ -22,7 +22,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           cache: 'npm'
 
       - name: Install dependencies
@@ -31,7 +31,24 @@ jobs:
       - name: Build Vite Frontend
         run: npm run build
 
-      - name: Build and Publish Electron Package
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: npx electron-builder --win --publish always
+      - name: Build Windows Installer
+        run: npx electron-builder --win --publish never
+
+      - name: Get package version
+        id: pkg
+        shell: pwsh
+        run: |
+          $ver = (Get-Content package.json | ConvertFrom-Json).version
+          echo "version=v$ver" >> $env:GITHUB_OUTPUT
+
+      - name: Publish Release to GitHub
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_type == 'tag' && github.ref_name || steps.pkg.outputs.version }}
+          files: |
+            release/*.exe
+            release/*.blockmap
+            release/latest.yml
+          draft: false
+          prerelease: false
+          generate_release_notes: true
