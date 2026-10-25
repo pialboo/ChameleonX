@@ -228,12 +228,21 @@ async function downloadFingerprintChromium() {
  */
 function getFreePort() {
   return new Promise((resolve, reject) => {
-    const srv = net.createServer();
-    srv.listen(0, '127.0.0.1', () => {
-      const port = srv.address().port;
-      srv.close(() => resolve(port));
-    });
-    srv.on('error', reject);
+    const activePorts = new Set(Array.from(runningProfiles.values()).map((p) => p.debugPort).filter(Boolean));
+    function tryPort() {
+      const srv = net.createServer();
+      srv.listen(0, '127.0.0.1', () => {
+        const port = srv.address().port;
+        srv.close(() => {
+          if (activePorts.has(port)) {
+            return setImmediate(tryPort);
+          }
+          resolve(port);
+        });
+      });
+      srv.on('error', reject);
+    }
+    tryPort();
   });
 }
 
@@ -466,11 +475,20 @@ async function launchProfile(profileId, windowBounds = null) {
   // 3. Sync Bookmarks & Pinned Extensions in Preferences
   syncProfileBookmarks(profileDir, state.bookmarks || [], userExtPaths);
 
-  // 4. Resolve Proxy if configured
+  // 4. Resolve Proxy if configured (Strict Leak Protection)
   let effectiveProxy = null;
-  if (profile.proxyMode === 'saved' && profile.proxyId) {
+  if (profile.proxyMode === 'saved') {
+    if (!profile.proxyId) {
+      throw new Error(環境「」已設定使用已存代理，但尚未指派代理。為防止真實 IP 洩漏，已阻止啟動！);
+    }
     effectiveProxy = (state.proxies || []).find((px) => px.id === profile.proxyId) || null;
-  } else if (profile.proxyMode === 'custom' && profile.proxy && profile.proxy.host && profile.proxy.port) {
+    if (!effectiveProxy) {
+      throw new Error(環境「」綁定的代理已不存在（可能已被刪除）。為防止真實本機 IP 洩漏，已阻止啟動！請重新指派代理。);
+    }
+  } else if (profile.proxyMode === 'custom') {
+    if (!profile.proxy || !profile.proxy.host || !profile.proxy.port) {
+      throw new Error(環境「」自訂代理設定不完整（缺少主機或端口）。為防止真實 IP 洩漏，已阻止啟動！);
+    }
     effectiveProxy = profile.proxy;
   }
 
@@ -922,6 +940,13 @@ async function detectProfileEgressIp(profileId) {
         entry.city = result.city;
         entry.isp = result.isp;
         entry.ipLoading = false;
+        if (profile) {
+          profile.lastPublicIp = result.publicIp;
+          profile.lastCountry = result.country;
+          profile.lastCity = result.city;
+          profile.lastIpCheckedAt = new Date().toISOString();
+          store.save();
+        }
         resolve(result);
       } else {
         const fallbackArgs = [...curlArgs, 'https://api.ipify.org?format=json'];
@@ -932,6 +957,11 @@ async function detectProfileEgressIp(profileId) {
               const fbData = JSON.parse(fbStdout.trim());
               if (fbData && fbData.ip) {
                 entry.publicIp = fbData.ip;
+                if (profile) {
+                  profile.lastPublicIp = fbData.ip;
+                  profile.lastIpCheckedAt = new Date().toISOString();
+                  store.save();
+                }
                 return resolve({ publicIp: fbData.ip });
               }
             } catch (e) {}

@@ -605,28 +605,49 @@ function createApiServer(electronDialogHandler = null) {
     const state = store.getState();
     const body = req.body || {};
 
-    // Support batch text import (multiple lines)
+    // Support batch text import (multiple lines with duplicate deduplication)
     if (body.rawText) {
       const lines = String(body.rawText).split(/\r?\n/);
+      const existingKeys = new Set(
+        (state.proxies || []).map((p) => `${p.host}:${p.port}`.toLowerCase())
+      );
       const added = [];
+      let skippedCount = 0;
       lines.forEach((line, idx) => {
         const parsed = parseProxyLine(line, body.defaultType || 'http', idx + 1);
         if (parsed) {
-          state.proxies.unshift(parsed);
-          added.push(parsed);
+          const key = `${parsed.host}:${parsed.port}`.toLowerCase();
+          if (existingKeys.has(key)) {
+            skippedCount++;
+          } else {
+            existingKeys.add(key);
+            state.proxies.unshift(parsed);
+            added.push(parsed);
+          }
         }
       });
       store.save();
-      return res.json({ addedCount: added.length, proxies: added });
+      return res.json({ addedCount: added.length, skippedCount, proxies: added });
     }
 
-    // Single proxy creation
+    // Single proxy creation (with duplicate host:port prevention)
+    const host = String(body.host || '127.0.0.1').trim();
+    const port = String(body.port || '8080').trim();
+    const duplicate = (state.proxies || []).find(
+      (p) => p.host.toLowerCase() === host.toLowerCase() && String(p.port) === port
+    );
+    if (duplicate) {
+      return res.status(400).json({
+        error: `代理 ${host}:${port} 已存在（名稱：「${duplicate.name}」），請勿重複新增！`,
+      });
+    }
+
     const px = {
       id: 'px-' + crypto.randomBytes(4).toString('hex'),
-      name: body.name || `代理 ${body.host}:${body.port}`,
+      name: body.name || `代理 ${host}:${port}`,
       type: body.type || 'http',
-      host: body.host || '127.0.0.1',
-      port: String(body.port || '8080'),
+      host,
+      port,
       username: body.username || '',
       password: body.password || '',
       changeIpUrl: body.changeIpUrl || '',
@@ -654,17 +675,40 @@ function createApiServer(electronDialogHandler = null) {
 
   app.delete('/api/proxies/:id', (req, res) => {
     const state = store.getState();
-    state.proxies = state.proxies.filter((p) => p.id !== req.params.id);
+    const targetId = req.params.id;
+    state.proxies = state.proxies.filter((p) => p.id !== targetId);
+
+    // 連動清除已綁定該代理的環境設定，防止幽靈 ID 導致錯誤直連洩漏
+    let affectedCount = 0;
+    (state.profiles || []).forEach((p) => {
+      if (p.proxyMode === 'saved' && p.proxyId === targetId) {
+        p.proxyMode = 'none';
+        p.proxyId = '';
+        affectedCount++;
+      }
+    });
+
     store.save();
-    res.json({ deleted: true });
+    res.json({ deleted: true, affectedCount });
   });
 
   app.post('/api/proxies/bulk-delete', (req, res) => {
     const state = store.getState();
     const ids = new Set(req.body?.ids || []);
     state.proxies = state.proxies.filter((p) => !ids.has(p.id));
+
+    // 連動清除已綁定該代理的環境設定
+    let affectedCount = 0;
+    (state.profiles || []).forEach((p) => {
+      if (p.proxyMode === 'saved' && ids.has(p.proxyId)) {
+        p.proxyMode = 'none';
+        p.proxyId = '';
+        affectedCount++;
+      }
+    });
+
     store.save();
-    res.json({ deleted: true });
+    res.json({ deleted: true, affectedCount });
   });
 
   app.post('/api/proxies/test', async (req, res) => {

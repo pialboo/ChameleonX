@@ -1,6 +1,6 @@
 {
   "name": "chameleonx",
-  "version": "1.0.1",
+  "version": "1.0.2",
   "description": "變色龍指紋瀏覽器 (ChameleonX) — 全繁體中文防關聯桌面系統 (支援無限制環境、批量操作、擴充功能自動掛載、Fingerprint-Chromium 核心)",
   "main": "electron/main.cjs",
   "scripts": {
@@ -34,6 +34,7 @@
       }
     ],
     "win": {
+      "icon": "electron/assets/icon.ico",
       "target": [
         {
           "target": "nsis",
@@ -44,11 +45,13 @@
       ]
     },
     "nsis": {
+      "installerIcon": "electron/assets/icon.ico",
+      "uninstallerIcon": "electron/assets/icon.ico",
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
-      "shortcutName": "變色龍指紋瀏覽器 (ChameleonX)",
+      "shortcutName": "變色龍指紋瀏覽器",
       "include": "build/installer.nsh"
     }
   },

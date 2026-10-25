@@ -14,6 +14,7 @@ import {
   RefreshCw,
   ArrowLeftRight,
   Info,
+  AlertTriangle,
 } from 'lucide-react';
 import {
   ProfileItem,
@@ -30,6 +31,7 @@ interface ProfileModalProps {
   isOpen: boolean;
   initialMode: 'single' | 'mass';
   editingProfile: ProfileItem | null;
+  profiles?: ProfileItem[];
   proxies: ProxyItem[];
   extensions: ExtensionItem[];
   statuses: StatusItem[];
@@ -140,6 +142,7 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
   isOpen,
   initialMode,
   editingProfile,
+  profiles = [],
   proxies,
   extensions,
   statuses,
@@ -491,6 +494,14 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                       </button>
                     ))}
                   </div>
+                  {massProxyAssign !== 'none' && massCount > proxies.length && (
+                    <div className="flex items-start gap-2 p-2 rounded-lg bg-amber-500/15 border border-amber-500/30 text-amber-300 text-xs mt-2">
+                      <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                      <div className="text-[11px]">
+                        <strong>注意：</strong>欲建立 {massCount} 個環境，但可用代理庫僅 {proxies.length} 組，將會有 {massCount - proxies.length} 個環境分配到相同代理造成 IP 重複！
+                      </div>
+                    </div>
+                  )}
                 </div>
               </div>
             ) : (
@@ -659,31 +670,58 @@ export const ProfileModal: React.FC<ProfileModalProps> = ({
                   </div>
                 </div>
 
-                {proxyMode === 'saved' && (
-                  <div className="flex items-center gap-2">
-                    <select
-                      value={proxyId}
-                      onChange={(e) => setProxyId(e.target.value)}
-                      className="flex-1 bg-[#12141e] border border-[#262f3c] rounded-lg px-3 py-2 text-xs text-white outline-none"
-                    >
-                      <option value="">-- 選擇代理 --</option>
-                      {proxies.map((px) => (
-                        <option key={px.id} value={px.id}>
-                          [{px.type.toUpperCase()}] {px.name} ({px.host}:{px.port})
-                        </option>
-                      ))}
-                    </select>
-                    <button
-                      type="button"
-                      disabled={!proxyId || testingProxy}
-                      onClick={handleTestSelectedProxy}
-                      className="px-3 py-2 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-40"
-                    >
-                      <Zap className="w-3.5 h-3.5" />
-                      <span>{testingProxy ? '測試中' : '測試連線'}</span>
-                    </button>
-                  </div>
-                )}
+                {proxyMode === 'saved' && (() => {
+                  const getProxyBoundProfiles = (targetProxyId: string) => {
+                    return profiles.filter(
+                      (p) => p.id !== editingProfile?.id && p.proxyMode === 'saved' && p.proxyId === targetProxyId
+                    );
+                  };
+                  const currentSelectedBound = proxyId ? getProxyBoundProfiles(proxyId) : [];
+
+                  return (
+                    <div className="space-y-2">
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={proxyId}
+                          onChange={(e) => setProxyId(e.target.value)}
+                          className="flex-1 bg-[#12141e] border border-[#262f3c] rounded-lg px-3 py-2 text-xs text-white outline-none"
+                        >
+                          <option value="">-- 選擇代理 --</option>
+                          {proxies.map((px) => {
+                            const bound = getProxyBoundProfiles(px.id);
+                            return (
+                              <option key={px.id} value={px.id}>
+                                [{px.type.toUpperCase()}] {px.name} ({px.host}:{px.port})
+                                {bound.length > 0 ? ` [⚠️ 已綁定 ${bound.length} 個環境]` : ''}
+                              </option>
+                            );
+                          })}
+                        </select>
+                        <button
+                          type="button"
+                          disabled={!proxyId || testingProxy}
+                          onClick={handleTestSelectedProxy}
+                          className="px-3 py-2 rounded-lg bg-sky-500/20 hover:bg-sky-500/30 text-sky-300 border border-sky-500/40 text-xs font-semibold flex items-center gap-1 cursor-pointer disabled:opacity-40"
+                        >
+                          <Zap className="w-3.5 h-3.5" />
+                          <span>{testingProxy ? '測試中' : '測試連線'}</span>
+                        </button>
+                      </div>
+
+                      {currentSelectedBound.length > 0 && (
+                        <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-300 text-xs">
+                          <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                          <div>
+                            <span className="font-bold">⚠️ 代理重複使用提醒：</span>
+                            <span className="text-[11px] text-amber-200/90 block mt-0.5">
+                              該代理目前已指派給「{currentSelectedBound.map((p) => p.name).join('、')}」使用。若同時啟動將導致出口 IP 相同，提高關聯封鎖風險！
+                            </span>
+                          </div>
+                        </div>
+                      )}
+                    </div>
+                  );
+                })()}
 
                 {proxyMode === 'custom' && (
                   <div className="space-y-3">

@@ -6,6 +6,13 @@ const { batchStopProfiles } = require('./backend/browserLauncher.cjs');
 const { attachSyncWebSocketServer } = require('./backend/syncHub.cjs');
 const { DATA_DIR } = require('./backend/store.cjs');
 
+// Single Instance Lock: 限制單一執行個體，重複開啟時自動喚出原主視窗
+const gotTheLock = app.requestSingleInstanceLock();
+if (!gotTheLock) {
+  app.quit();
+  process.exit(0);
+}
+
 // Ensure Electron always gets a clean, unlocked userData directory so it never fails with Lockfile Error 32 or Cache Error 5
 function setupCleanUserDataDir() {
   const baseSessionDir = path.join(DATA_DIR, 'app_session');
@@ -240,6 +247,19 @@ ipcMain.handle('window:control', (_event, action) => {
 });
 
 app.whenReady().then(async () => {
+  // 設定 Windows App User Model ID，確保工作列正確綁定專屬圖示
+  if (process.platform === 'win32') {
+    app.setAppUserModelId('com.chameleonx.app');
+  }
+
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      if (!mainWindow.isVisible()) mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
   await startLocalBackend();
   createWindow();
   createTray();

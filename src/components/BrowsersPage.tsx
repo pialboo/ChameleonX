@@ -25,6 +25,8 @@ import {
   RotateCw,
   FileText,
   AlertTriangle,
+  AlertCircle,
+  Info,
   Archive,
   Globe,
   ChevronDown,
@@ -156,7 +158,16 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
       showToast('正在偵測外網 IP...');
       const res = await api.refreshRunningIp(profileId);
       if (res.publicIp) {
-        showToast(`外網 IP：${res.publicIp} (${res.country || ''} ${res.city || ''})`);
+        const thisProfile = profiles.find((p) => p.id === profileId);
+        const thisName = thisProfile?.name || '此環境';
+        const conflict = profiles.find(
+          (p) => p.id !== profileId && runningMap[p.id]?.running && runningMap[p.id]?.publicIp === res.publicIp
+        );
+        if (conflict) {
+          showToast(`⚠️ 嚴重警告！「${thisName}」的外網 IP (${res.publicIp}) 與運行中的「${conflict.name}」相同！`, 'error');
+        } else {
+          showToast(`外網 IP：${res.publicIp} (${res.country || ''} ${res.city || ''})`);
+        }
       } else {
         showToast('無法取得外網 IP，請確認網路或代理設定', 'error');
       }
@@ -267,12 +278,127 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
     }
   };
 
+  // ================= 外網 IP 重複檢測與警示邏輯 =================
+  const [filterDuplicateIpOnly, setFilterDuplicateIpOnly] = useState(false);
+  const warnedDuplicatePairsRef = useRef<Set<string>>(new Set());
+
+  // 1. 運行中環境的 IP 分組 (Map<ip, ProfileItem[]>)
+  const runningIpGroups = useMemo(() => {
+    const groups = new Map<string, ProfileItem[]>();
+    for (const p of profiles) {
+      const run = runningMap[p.id];
+      if (run?.running && run.publicIp && run.publicIp.trim()) {
+        const ip = run.publicIp.trim();
+        const list = groups.get(ip) || [];
+        list.push(p);
+        groups.set(ip, list);
+      }
+    }
+    return groups;
+  }, [profiles, runningMap]);
+
+  // 運行中 IP 重複的清單 (同一個 IP >= 2 個運行中環境)
+  const duplicateRunningIpMap = useMemo(() => {
+    const map = new Map<string, ProfileItem[]>();
+    for (const [ip, list] of runningIpGroups.entries()) {
+      if (list.length > 1) {
+        map.set(ip, list);
+      }
+    }
+    return map;
+  }, [runningIpGroups]);
+
+  // 屬於運行中重複環境的 ID 集合
+  const duplicateRunningProfileIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const list of duplicateRunningIpMap.values()) {
+      for (const p of list) {
+        ids.add(p.id);
+      }
+    }
+    return ids;
+  }, [duplicateRunningIpMap]);
+
+  // 2. 所有環境（包含最後記錄的 lastPublicIp）的分組
+  const allIpGroups = useMemo(() => {
+    const groups = new Map<string, ProfileItem[]>();
+    for (const p of profiles) {
+      const run = runningMap[p.id];
+      const effectiveIp = (run?.running && run.publicIp ? run.publicIp : p.lastPublicIp)?.trim();
+      if (effectiveIp) {
+        const list = groups.get(effectiveIp) || [];
+        list.push(p);
+        groups.set(effectiveIp, list);
+      }
+    }
+    return groups;
+  }, [profiles, runningMap]);
+
+  const duplicateAllIpMap = useMemo(() => {
+    const map = new Map<string, ProfileItem[]>();
+    for (const [ip, list] of allIpGroups.entries()) {
+      if (list.length > 1) {
+        map.set(ip, list);
+      }
+    }
+    return map;
+  }, [allIpGroups]);
+
+  const duplicateAllProfileIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const list of duplicateAllIpMap.values()) {
+      for (const p of list) {
+        ids.add(p.id);
+      }
+    }
+    return ids;
+  }, [duplicateAllIpMap]);
+
+  // 自動警告通知：當偵測到有運行中環境外網 IP 衝突時，立即彈出 Toast 與系統通知
+  useEffect(() => {
+    if (duplicateRunningIpMap.size === 0) {
+      warnedDuplicatePairsRef.current.clear();
+      return;
+    }
+
+    duplicateRunningIpMap.forEach((conflictProfiles, ip) => {
+      for (let i = 0; i < conflictProfiles.length; i++) {
+        for (let j = i + 1; j < conflictProfiles.length; j++) {
+          const pA = conflictProfiles[i];
+          const pB = conflictProfiles[j];
+          const pairKey = `${[pA.id, pB.id].sort().join('::')}::${ip}`;
+          if (!warnedDuplicatePairsRef.current.has(pairKey)) {
+            warnedDuplicatePairsRef.current.add(pairKey);
+            showToast(
+              `⚠️ 警告！環境「${pA.name}」與「${pB.name}」外網 IP 相同 (${ip})！請注意防關聯風險！`,
+              'error'
+            );
+
+            // 支援系統桌面通知
+            try {
+              if (typeof window !== 'undefined' && 'Notification' in window) {
+                if (Notification.permission === 'granted') {
+                  new Notification('ChameleonX 外網 IP 重複警告', {
+                    body: `環境「${pA.name}」與「${pB.name}」外網 IP 皆為 ${ip}，請立即檢查代理！`,
+                  });
+                } else if (Notification.permission !== 'denied') {
+                  Notification.requestPermission();
+                }
+              }
+            } catch (e) {}
+          }
+        }
+      }
+    });
+  }, [duplicateRunningIpMap, showToast]);
+
   const filteredProfiles = useMemo(() => {
     const list = profiles.filter((p) => {
       if (activeFolderId !== 'fld-all' && p.folderId !== activeFolderId) return false;
       if (filterStatusId && p.statusId !== filterStatusId) return false;
       if (filterTag && !(p.tags || []).includes(filterTag)) return false;
       if (filterRunningOnly && !runningMap[p.id]?.running) return false;
+      if (filterDuplicateIpOnly && !duplicateRunningProfileIds.has(p.id) && !duplicateAllProfileIds.has(p.id)) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchName = p.name.toLowerCase().includes(q);
@@ -294,7 +420,20 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
       });
     }
     return list;
-  }, [profiles, activeFolderId, filterStatusId, filterTag, filterRunningOnly, searchQuery, runningMap, sortRunningFirst, selectedIds]);
+  }, [
+    profiles,
+    activeFolderId,
+    filterStatusId,
+    filterTag,
+    filterRunningOnly,
+    filterDuplicateIpOnly,
+    duplicateRunningProfileIds,
+    duplicateAllProfileIds,
+    searchQuery,
+    runningMap,
+    sortRunningFirst,
+    selectedIds,
+  ]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -461,145 +600,12 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
 
   return (
     <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[#0c0e12] relative">
-      {/* Top Action Bars (批量操作列 + 常駐同步操作 & 視窗置頂列) */}
+      {/* Top Action Bars (整併為極致緊湊的 2 行工具列) */}
       <div className="shrink-0 bg-[#12161c] border-b border-[#262f3c] flex flex-col z-20">
-        {/* Bulk Action Bar (當勾選環境時顯示於上方) */}
-        {selectedIds.length > 0 && (
-          <div className="px-6 py-2 bg-[#12161c] border-b border-sky-500/30 flex items-center justify-between gap-3 flex-wrap">
-            <div className="flex items-center gap-3">
-              <span className="px-2.5 py-1 rounded-lg bg-sky-500 text-white text-xs font-bold">
-                已選 {selectedIds.length} 個
-              </span>
-              <button
-                onClick={() => setSelectedIds([])}
-                className="text-xs text-slate-400 hover:text-white cursor-pointer transition"
-              >
-                取消
-              </button>
-              <div className="h-4 w-[1px] bg-[#262f3c]" />
-              <label className="flex items-center gap-1.5 text-xs text-slate-300 cursor-pointer select-none">
-                <input
-                  type="checkbox"
-                  checked={autoTileBatch}
-                  onChange={(e) => setAutoTileBatch(e.target.checked)}
-                  className="accent-sky-500 rounded cursor-pointer"
-                />
-                <LayoutGrid className="w-3.5 h-3.5 text-sky-400" />
-                <span>自動並排視窗</span>
-              </label>
-            </div>
-
-            <div className="flex items-center gap-1.5 flex-wrap">
-              <button
-                disabled={bulkLoading}
-                onClick={handleBulkLaunch}
-                className="px-3 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition shadow-sm"
-              >
-                <Play className="w-3 h-3 fill-current" />
-                <span>批量啟動</span>
-              </button>
-
-              <button
-                disabled={bulkLoading}
-                onClick={handleBulkStop}
-                className="px-3 py-1.5 rounded-lg bg-rose-600/25 hover:bg-rose-600 text-rose-200 hover:text-white border border-rose-500/40 text-xs font-bold flex items-center gap-1 cursor-pointer transition"
-              >
-                <Square className="w-3 h-3 fill-current" />
-                <span>批量關閉</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setBulkSelectedExtIds(extensions.map((e) => e.id));
-                  setBulkModalType('extensions');
-                }}
-                className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
-              >
-                <Puzzle className="w-3.5 h-3.5 text-sky-400" />
-                <span>擴充功能</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setBulkSingleProxyId(proxies[0]?.id || '');
-                  setBulkModalType('proxy');
-                }}
-                className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
-              >
-                <Shield className="w-3.5 h-3.5 text-sky-400" />
-                <span>分配代理</span>
-              </button>
-
-              <button
-                onClick={() => {
-                  setBulkStatusId(statuses[0]?.id || '');
-                  setBulkModalType('status');
-                }}
-                className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold cursor-pointer transition"
-              >
-                狀態
-              </button>
-
-              <button
-                onClick={() => {
-                  setBulkSelectedTags([]);
-                  setBulkModalType('tags');
-                }}
-                className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold cursor-pointer transition"
-              >
-                標籤
-              </button>
-
-              <button
-                onClick={() => {
-                  setBulkFolderId(folders[0]?.id || 'fld-all');
-                  setBulkModalType('folder');
-                }}
-                className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold cursor-pointer transition"
-              >
-                資料夾
-              </button>
-
-              <button
-                onClick={handleBulkNewFingerprint}
-                className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
-              >
-                <Dices className="w-3.5 h-3.5 text-amber-400" />
-                <span>換指紋</span>
-              </button>
-
-              <button
-                onClick={handleBulkExportCookies}
-                className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
-              >
-                <Cookie className="w-3.5 h-3.5 text-amber-400" />
-                <span>匯出 Cookie</span>
-              </button>
-
-              <button
-                onClick={() => onGoToBackup && onGoToBackup(selectedIds)}
-                className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
-                title="打包備份選取的環境"
-              >
-                <Archive className="w-3.5 h-3.5 text-sky-400" />
-                <span>備份選取</span>
-              </button>
-
-              <button
-                onClick={handleBulkDelete}
-                className="p-1.5 rounded-lg bg-rose-500/15 hover:bg-rose-600 text-rose-400 hover:text-white transition cursor-pointer"
-                title="批量刪除"
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
-            </div>
-          </div>
-        )}
-
-        {/* Permanent Synchronizer & Window Controls Bar (上方常駐同步操作與視窗控制) */}
-        <div className="px-6 py-2.5 flex items-center justify-between gap-4 flex-wrap">
-          {/* 左側：同步操作主開關與模式 */}
-          <div className="flex items-center gap-3 flex-wrap">
+        {/* 第 1 行：同步操作 & 視窗控制 & 建立環境 */}
+        <div className="px-6 py-2 flex items-center justify-between gap-3 border-b border-[#1f2631]">
+          {/* 左側：同步操作主開關與導覽 (展開式) */}
+          <div className="flex items-center gap-2.5">
             <button
               onClick={handleToggleSync}
               className={`px-3 py-1.5 rounded-lg text-xs font-bold flex items-center gap-2 cursor-pointer transition shadow-sm ${
@@ -609,235 +615,190 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
               }`}
             >
               <Radio className={`w-3.5 h-3.5 ${isSyncEnabled ? 'text-white animate-pulse' : 'text-slate-400'}`} />
-              <span>{isSyncEnabled ? `同步操作中 (${syncedWindowCount} 視窗)` : '啟動同步操作'}</span>
+              <span>{isSyncEnabled ? `同步中 (${syncedWindowCount} 視窗)` : '啟動同步操作'}</span>
             </button>
 
-            <div className="flex items-center gap-1 text-xs bg-[#12161c] p-0.5 rounded-lg border border-[#262f3c]">
-              <button
-                onClick={() => handleToggleSyncOption('syncClick')}
-                className={`px-2 py-1 rounded-md font-semibold cursor-pointer transition text-[11px] ${
-                  syncState?.syncClick !== false
-                    ? 'bg-emerald-500/20 text-emerald-300'
-                    : 'text-slate-500 hover:text-slate-400'
-                }`}
-              >
-                點擊
-              </button>
-              <button
-                onClick={() => handleToggleSyncOption('syncInput')}
-                className={`px-2 py-1 rounded-md font-semibold cursor-pointer transition text-[11px] ${
-                  syncState?.syncInput !== false
-                    ? 'bg-emerald-500/20 text-emerald-300'
-                    : 'text-slate-500 hover:text-slate-400'
-                }`}
-              >
-                輸入
-              </button>
-              <button
-                onClick={() => handleToggleSyncOption('syncScroll')}
-                className={`px-2 py-1 rounded-md font-semibold cursor-pointer transition text-[11px] ${
-                  syncState?.syncScroll !== false
-                    ? 'bg-emerald-500/20 text-emerald-300'
-                    : 'text-slate-500 hover:text-slate-400'
-                }`}
-              >
-                捲動
-              </button>
-            </div>
+            {/* 啟動同步時在旁邊平滑展開導覽控制列 */}
+            {isSyncEnabled && (
+              <div className="flex items-center gap-1.5 animate-in fade-in">
+                <button
+                  onClick={() => handleSyncCommand('back')}
+                  title="所有視窗上一頁"
+                  className="p-1.5 rounded-lg bg-[#181d24] hover:bg-[#202731] text-slate-300 cursor-pointer transition border border-[#262f3c]"
+                >
+                  <ArrowLeft className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => handleSyncCommand('forward')}
+                  title="所有視窗下一頁"
+                  className="p-1.5 rounded-lg bg-[#181d24] hover:bg-[#202731] text-slate-300 cursor-pointer transition border border-[#262f3c]"
+                >
+                  <ArrowRight className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  onClick={() => handleSyncCommand('reload')}
+                  title="所有視窗重新整理"
+                  className="p-1.5 rounded-lg bg-[#181d24] hover:bg-[#202731] text-slate-300 cursor-pointer transition border border-[#262f3c]"
+                >
+                  <RotateCw className="w-3.5 h-3.5" />
+                </button>
 
-            <div className="h-4 w-[1px] bg-[#262f3c]" />
-
-            {/* 同步導覽控制 */}
-            <div className="flex items-center gap-1">
-              <button
-                onClick={() => handleSyncCommand('back')}
-                title="所有視窗上一頁"
-                className="p-1.5 rounded-lg bg-[#181d24] hover:bg-[#202731] text-slate-300 cursor-pointer transition border border-[#262f3c]"
-              >
-                <ArrowLeft className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => handleSyncCommand('forward')}
-                title="所有視窗下一頁"
-                className="p-1.5 rounded-lg bg-[#181d24] hover:bg-[#202731] text-slate-300 cursor-pointer transition border border-[#262f3c]"
-              >
-                <ArrowRight className="w-3.5 h-3.5" />
-              </button>
-              <button
-                onClick={() => handleSyncCommand('reload')}
-                title="所有視窗重新整理"
-                className="p-1.5 rounded-lg bg-[#181d24] hover:bg-[#202731] text-slate-300 cursor-pointer transition border border-[#262f3c]"
-              >
-                <RotateCw className="w-3.5 h-3.5" />
-              </button>
-              {/* 搜尋、選擇、輸入合一的同步導覽 Combobox */}
-              <div ref={urlComboboxRef} className="relative flex items-center">
-                <div className="relative flex items-center">
-                  <Bookmark className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 pointer-events-none" />
-                  <input
-                    type="text"
-                    value={syncUrlInput}
-                    onFocus={() => setIsUrlDropdownOpen(true)}
-                    onChange={(e) => {
-                      setSyncUrlInput(e.target.value);
-                      setIsUrlDropdownOpen(true);
-                      setHighlightedBmIndex(-1);
-                    }}
-                    onKeyDown={(e) => {
-                      if (e.key === 'ArrowDown') {
-                        e.preventDefault();
+                {/* 搜尋、選擇、輸入合一的網址 Combobox */}
+                <div ref={urlComboboxRef} className="relative flex items-center">
+                  <div className="relative flex items-center">
+                    <Bookmark className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 pointer-events-none" />
+                    <input
+                      type="text"
+                      value={syncUrlInput}
+                      onFocus={() => setIsUrlDropdownOpen(true)}
+                      onChange={(e) => {
+                        setSyncUrlInput(e.target.value);
                         setIsUrlDropdownOpen(true);
-                        setHighlightedBmIndex((prev) =>
-                          prev < filteredBookmarks.length - 1 ? prev + 1 : 0
-                        );
-                      } else if (e.key === 'ArrowUp') {
-                        e.preventDefault();
-                        setIsUrlDropdownOpen(true);
-                        setHighlightedBmIndex((prev) =>
-                          prev > 0 ? prev - 1 : filteredBookmarks.length - 1
-                        );
-                      } else if (e.key === 'Enter') {
-                        if (
-                          isUrlDropdownOpen &&
-                          highlightedBmIndex >= 0 &&
-                          filteredBookmarks[highlightedBmIndex]
-                        ) {
-                          handleSelectBookmark(
-                            filteredBookmarks[highlightedBmIndex].url,
-                            true
+                        setHighlightedBmIndex(-1);
+                      }}
+                      onKeyDown={(e) => {
+                        if (e.key === 'ArrowDown') {
+                          e.preventDefault();
+                          setIsUrlDropdownOpen(true);
+                          setHighlightedBmIndex((prev) =>
+                            prev < filteredBookmarks.length - 1 ? prev + 1 : 0
                           );
-                        } else {
+                        } else if (e.key === 'ArrowUp') {
+                          e.preventDefault();
+                          setIsUrlDropdownOpen(true);
+                          setHighlightedBmIndex((prev) =>
+                            prev > 0 ? prev - 1 : filteredBookmarks.length - 1
+                          );
+                        } else if (e.key === 'Enter') {
+                          if (
+                            isUrlDropdownOpen &&
+                            highlightedBmIndex >= 0 &&
+                            filteredBookmarks[highlightedBmIndex]
+                          ) {
+                            handleSelectBookmark(
+                              filteredBookmarks[highlightedBmIndex].url,
+                              true
+                            );
+                          } else {
+                            setIsUrlDropdownOpen(false);
+                            handleSyncCommand('navigate');
+                          }
+                        } else if (e.key === 'Escape') {
                           setIsUrlDropdownOpen(false);
-                          handleSyncCommand('navigate');
                         }
-                      } else if (e.key === 'Escape') {
-                        setIsUrlDropdownOpen(false);
-                      }
-                    }}
-                    placeholder="搜尋書籤、選擇或輸入網址..."
-                    className="w-64 bg-[#0c0e12] border border-[#202731] rounded-l-lg pl-8 pr-12 py-1 text-xs text-white outline-none focus:border-emerald-500 transition"
-                  />
-                  <div className="absolute right-1.5 flex items-center gap-0.5">
-                    {syncUrlInput && (
+                      }}
+                      placeholder="搜尋書籤或輸入網址..."
+                      className="w-56 bg-[#0c0e12] border border-[#202731] rounded-l-lg pl-8 pr-12 py-1 text-xs text-white outline-none focus:border-emerald-500 transition"
+                    />
+                    <div className="absolute right-1.5 flex items-center gap-0.5">
+                      {syncUrlInput && (
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setSyncUrlInput('');
+                            setHighlightedBmIndex(-1);
+                          }}
+                          className="p-0.5 text-slate-500 hover:text-slate-300 cursor-pointer"
+                          title="清除輸入"
+                        >
+                          <X className="w-3 h-3" />
+                        </button>
+                      )}
                       <button
                         type="button"
-                        onClick={() => {
-                          setSyncUrlInput('');
-                          setHighlightedBmIndex(-1);
-                        }}
+                        onClick={() => setIsUrlDropdownOpen((prev) => !prev)}
                         className="p-0.5 text-slate-500 hover:text-slate-300 cursor-pointer"
-                        title="清除輸入"
+                        title="展開預設書籤選單"
                       >
-                        <X className="w-3 h-3" />
+                        <ChevronDown
+                          className={`w-3.5 h-3.5 transition-transform ${
+                            isUrlDropdownOpen ? 'rotate-180 text-emerald-400' : ''
+                          }`}
+                        />
                       </button>
-                    )}
-                    <button
-                      type="button"
-                      onClick={() => setIsUrlDropdownOpen((prev) => !prev)}
-                      className="p-0.5 text-slate-500 hover:text-slate-300 cursor-pointer"
-                      title="展開預設書籤選單"
-                    >
-                      <ChevronDown
-                        className={`w-3.5 h-3.5 transition-transform ${
-                          isUrlDropdownOpen ? 'rotate-180 text-emerald-400' : ''
-                        }`}
-                      />
-                    </button>
+                    </div>
                   </div>
+
+                  <button
+                    onClick={() => {
+                      setIsUrlDropdownOpen(false);
+                      handleSyncCommand('navigate');
+                    }}
+                    className="px-2.5 py-1 rounded-r-lg bg-emerald-600/80 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer transition border border-l-0 border-emerald-500/50 shrink-0"
+                  >
+                    前往
+                  </button>
+
+                  {/* 下拉選擇面板 */}
+                  {isUrlDropdownOpen && (
+                    <div className="absolute top-full left-0 mt-1.5 w-80 bg-[#12161c] border border-[#2b3543] rounded-xl shadow-2xl z-50 overflow-hidden divide-y divide-[#1e2530] animate-in fade-in duration-150">
+                      <div className="px-3 py-1.5 bg-[#161b22] flex items-center justify-between text-[11px] text-slate-400">
+                        <span className="font-semibold flex items-center gap-1.5">
+                          <Bookmark className="w-3 h-3 text-emerald-400" />
+                          <span>快速選擇書籤 ({filteredBookmarks.length})</span>
+                        </span>
+                        <span className="text-[10px] text-slate-500">Enter 前往</span>
+                      </div>
+
+                      <div className="max-h-60 overflow-y-auto p-1 space-y-0.5">
+                        {filteredBookmarks.length > 0 ? (
+                          filteredBookmarks.map((bm, idx) => {
+                            const isHighlighted = idx === highlightedBmIndex;
+                            return (
+                              <div
+                                key={bm.id}
+                                onMouseEnter={() => setHighlightedBmIndex(idx)}
+                                onClick={() => handleSelectBookmark(bm.url, false)}
+                                className={`group px-2.5 py-1.5 rounded-lg text-xs cursor-pointer flex items-center justify-between transition ${
+                                  isHighlighted
+                                    ? 'bg-emerald-600/20 text-emerald-200 border border-emerald-500/30'
+                                    : 'text-slate-200 hover:bg-[#1a212b]'
+                                }`}
+                              >
+                                <div className="min-w-0 flex-1 pr-2">
+                                  <div className="font-bold flex items-center gap-1.5 truncate">
+                                    <span>🔖</span>
+                                    <span>{bm.title}</span>
+                                  </div>
+                                  <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
+                                    {bm.url}
+                                  </div>
+                                </div>
+
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleSelectBookmark(bm.url, true);
+                                  }}
+                                  className="px-2 py-0.5 rounded bg-emerald-600/40 hover:bg-emerald-500 text-white text-[10px] font-medium opacity-0 group-hover:opacity-100 transition shrink-0 cursor-pointer"
+                                  title="直接跳轉至此書籤"
+                                >
+                                  直接前往
+                                </button>
+                              </div>
+                            );
+                          })
+                        ) : (
+                          <div className="px-3 py-4 text-center text-xs text-slate-400">
+                            無相符書籤
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                  )}
                 </div>
 
                 <button
-                  onClick={() => {
-                    setIsUrlDropdownOpen(false);
-                    handleSyncCommand('navigate');
-                  }}
-                  className="px-3 py-1 rounded-r-lg bg-emerald-600/80 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer transition border border-l-0 border-emerald-500/50 flex items-center gap-1 shrink-0"
+                  onClick={() => setDiffTextModalOpen(true)}
+                  title="依序填入不同文字到各個視窗焦點輸入框"
+                  className="px-2 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/40 text-sky-200 border border-sky-500/30 text-xs font-medium cursor-pointer transition flex items-center gap-1"
                 >
-                  前往
+                  <FileText className="w-3 h-3 text-sky-400" />
+                  <span>差異文字</span>
                 </button>
-
-                {/* 下拉選擇面板 */}
-                {isUrlDropdownOpen && (
-                  <div className="absolute top-full left-0 mt-1.5 w-80 bg-[#12161c] border border-[#2b3543] rounded-xl shadow-2xl z-50 overflow-hidden divide-y divide-[#1e2530] animate-in fade-in duration-150">
-                    <div className="px-3 py-1.5 bg-[#161b22] flex items-center justify-between text-[11px] text-slate-400">
-                      <span className="font-semibold flex items-center gap-1.5">
-                        <Bookmark className="w-3 h-3 text-emerald-400" />
-                        <span>快速選擇書籤 ({filteredBookmarks.length})</span>
-                      </span>
-                      <span className="text-[10px] text-slate-500">點擊填入 / 按 Enter 前往</span>
-                    </div>
-
-                    <div className="max-h-60 overflow-y-auto p-1 space-y-0.5">
-                      {filteredBookmarks.length > 0 ? (
-                        filteredBookmarks.map((bm, idx) => {
-                          const isHighlighted = idx === highlightedBmIndex;
-                          return (
-                            <div
-                              key={bm.id}
-                              onMouseEnter={() => setHighlightedBmIndex(idx)}
-                              onClick={() => handleSelectBookmark(bm.url, false)}
-                              className={`group px-2.5 py-1.5 rounded-lg text-xs cursor-pointer flex items-center justify-between transition ${
-                                isHighlighted
-                                  ? 'bg-emerald-600/20 text-emerald-200 border border-emerald-500/30'
-                                  : 'text-slate-200 hover:bg-[#1a212b]'
-                              }`}
-                            >
-                              <div className="min-w-0 flex-1 pr-2">
-                                <div className="font-bold flex items-center gap-1.5 truncate">
-                                  <span>🔖</span>
-                                  <span>{bm.title}</span>
-                                </div>
-                                <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
-                                  {bm.url}
-                                </div>
-                              </div>
-
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleSelectBookmark(bm.url, true);
-                                }}
-                                className="px-2 py-0.5 rounded bg-emerald-600/40 hover:bg-emerald-500 text-white text-[10px] font-medium opacity-0 group-hover:opacity-100 transition shrink-0 cursor-pointer"
-                                title="直接跳轉至此書籤"
-                              >
-                                直接前往
-                              </button>
-                            </div>
-                          );
-                        })
-                      ) : (
-                        <div className="px-3 py-4 text-center text-xs text-slate-400">
-                          {bookmarks.length === 0 ? (
-                            <div>
-                              <span>尚未設定常用書籤</span>
-                              <div className="text-[10px] text-slate-500 mt-0.5">
-                                可至側邊欄「書籤設定」新增
-                              </div>
-                            </div>
-                          ) : (
-                            <div>
-                              <span>無相符書籤</span>
-                              <div className="text-[10px] text-slate-500 mt-0.5">
-                                可直接輸入網址並點擊「前往」
-                              </div>
-                            </div>
-                          )}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                )}
               </div>
-              <button
-                onClick={() => setDiffTextModalOpen(true)}
-                title="依序填入不同文字到各個視窗焦點輸入框"
-                className="px-2 py-1 rounded-lg bg-sky-500/20 hover:bg-sky-500/40 text-sky-200 border border-sky-500/30 text-xs font-medium cursor-pointer transition flex items-center gap-1"
-              >
-                <FileText className="w-3 h-3 text-sky-400" />
-                <span>差異文字</span>
-              </button>
-            </div>
+            )}
           </div>
 
           {/* 右側：排列視窗 & 置頂最上層 & 批量建立 & 建立環境 */}
@@ -845,7 +806,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
             <button
               onClick={() => handleTileRunningWindows('grid')}
               title="將所有開啟中的瀏覽器視窗自動網格並排並強制跳到最上層"
-              className="px-3 py-1.5 rounded-lg bg-[#181d24] hover:bg-[#262f3c] text-sky-300 border border-sky-500/40 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+              className="px-2.5 py-1.5 rounded-lg bg-[#181d24] hover:bg-[#262f3c] text-sky-300 border border-sky-500/40 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
             >
               <LayoutGrid className="w-3.5 h-3.5 text-sky-400" />
               <span>並排視窗</span>
@@ -854,7 +815,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
             <button
               onClick={handleBringToTop}
               title="破除 Windows 前台鎖定，立即將所有運行中的瀏覽器視窗還原並拉至最上層"
-              className="px-3 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
+              className="px-2.5 py-1.5 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 border border-amber-500/40 text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm"
             >
               <Layers className="w-3.5 h-3.5 text-amber-400" />
               <span>跳到最上層</span>
@@ -872,101 +833,236 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
 
             <button
               onClick={() => onOpenCreate('single')}
-              className="px-3.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-500 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm shadow-sky-950"
+              className="px-3.5 py-1.5 rounded-lg bg-sky-500 hover:bg-sky-400 text-white text-xs font-bold flex items-center gap-1.5 transition cursor-pointer shadow-sm shadow-sky-950"
             >
               <Plus className="w-3.5 h-3.5" />
               <span>建立環境</span>
             </button>
           </div>
         </div>
-      </div>
 
-      {/* Filter & Search Toolbar */}
-      <div className="px-6 py-2.5 bg-[#12161c] border-b border-[#181d24] flex items-center justify-between gap-3 shrink-0">
-        <div className="flex items-center gap-2.5 flex-1">
-          <div className="relative flex-1 max-w-sm">
-            <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
-            <input
-              type="text"
-              value={searchQuery}
-              onChange={(e) => setSearchQuery(e.target.value)}
-              placeholder="搜尋名稱、備註、標籤或 Seed..."
-              className="w-full bg-[#0c0e12] border border-[#262f3c] rounded-lg pl-8 pr-3 py-1.5 text-xs text-white outline-none focus:border-sky-500"
-            />
+        {/* 第 2 行：平時為【搜尋 & 篩選列】，有勾選時無縫切換為【批量操作列】 */}
+        {selectedIds.length > 0 ? (
+          <div className="px-6 py-2 bg-[#12161c] flex items-center justify-between gap-3 flex-wrap animate-in fade-in">
+            <div className="flex items-center gap-2.5">
+              <span className="px-2.5 py-0.5 rounded-lg bg-sky-500 text-white text-xs font-bold">
+                已選 {selectedIds.length} 個
+              </span>
+              <button
+                onClick={() => setSelectedIds([])}
+                className="text-xs text-slate-400 hover:text-white cursor-pointer transition"
+              >
+                取消
+              </button>
+              <button
+                onClick={toggleSelectAll}
+                className="text-xs text-sky-400 hover:text-sky-300 cursor-pointer transition"
+              >
+                {selectedIds.length === filteredProfiles.length ? '取消全選' : '全選全部'}
+              </button>
+              <div className="h-4 w-[1px] bg-[#262f3c]" />
+              <label className="flex items-center gap-1 text-xs text-slate-300 cursor-pointer select-none">
+                <input
+                  type="checkbox"
+                  checked={autoTileBatch}
+                  onChange={(e) => setAutoTileBatch(e.target.checked)}
+                  className="accent-sky-500 rounded cursor-pointer"
+                />
+                <span>自動並排視窗</span>
+              </label>
+            </div>
+
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <button
+                disabled={bulkLoading}
+                onClick={handleBulkLaunch}
+                className="px-2.5 py-1 rounded-lg bg-emerald-600 hover:bg-emerald-500 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition shadow-sm"
+              >
+                <Play className="w-3 h-3 fill-current" />
+                <span>批量啟動</span>
+              </button>
+
+              <button
+                disabled={bulkLoading}
+                onClick={handleBulkStop}
+                className="px-2.5 py-1 rounded-lg bg-rose-600/25 hover:bg-rose-600 text-rose-200 hover:text-white border border-rose-500/40 text-xs font-bold flex items-center gap-1 cursor-pointer transition"
+              >
+                <Square className="w-3 h-3 fill-current" />
+                <span>批量關閉</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setBulkSingleProxyId(proxies[0]?.id || '');
+                  setBulkModalType('proxy');
+                }}
+                className="px-2.5 py-1 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
+              >
+                <Shield className="w-3.5 h-3.5 text-sky-400" />
+                <span>分配代理</span>
+              </button>
+
+              <button
+                onClick={() => {
+                  setBulkSelectedExtIds(extensions.map((e) => e.id));
+                  setBulkModalType('extensions');
+                }}
+                className="px-2.5 py-1 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
+              >
+                <Puzzle className="w-3.5 h-3.5 text-sky-400" />
+                <span>擴充功能</span>
+              </button>
+
+              <button
+                onClick={handleBulkNewFingerprint}
+                className="px-2.5 py-1 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
+              >
+                <Dices className="w-3.5 h-3.5 text-amber-400" />
+                <span>換指紋</span>
+              </button>
+
+              <button
+                onClick={handleBulkExportCookies}
+                className="px-2.5 py-1 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
+              >
+                <Cookie className="w-3.5 h-3.5 text-amber-400" />
+                <span>匯出 Cookie</span>
+              </button>
+
+              <button
+                onClick={() => onGoToBackup && onGoToBackup(selectedIds)}
+                className="px-2.5 py-1 rounded-lg bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white text-xs font-semibold flex items-center gap-1 cursor-pointer transition"
+                title="打包備份選取的環境"
+              >
+                <Archive className="w-3.5 h-3.5 text-sky-400" />
+                <span>備份</span>
+              </button>
+
+              <button
+                onClick={handleBulkDelete}
+                className="p-1 rounded-lg bg-rose-500/15 hover:bg-rose-600 text-rose-400 hover:text-white transition cursor-pointer"
+                title="批量刪除"
+              >
+                <Trash2 className="w-4 h-4" />
+              </button>
+            </div>
           </div>
+        ) : (
+          <div className="px-6 py-2 bg-[#12161c] flex items-center justify-between gap-3 shrink-0">
+            <div className="flex items-center gap-2.5 flex-1">
+              <div className="relative flex-1 max-w-sm">
+                <Search className="w-3.5 h-3.5 text-slate-400 absolute left-3 top-1/2 -translate-y-1/2" />
+                <input
+                  type="text"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  placeholder="搜尋名稱、備註、標籤或 Seed..."
+                  className="w-full bg-[#0c0e12] border border-[#262f3c] rounded-lg pl-8 pr-3 py-1.5 text-xs text-white outline-none focus:border-sky-500"
+                />
+              </div>
 
-          <select
-            value={filterStatusId}
-            onChange={(e) => setFilterStatusId(e.target.value)}
-            className="bg-[#0c0e12] border border-[#262f3c] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500"
-          >
-            <option value="">全部狀態</option>
-            {statuses.map((st) => (
-              <option key={st.id} value={st.id}>
-                {st.name}
-              </option>
-            ))}
-          </select>
+              <select
+                value={filterStatusId}
+                onChange={(e) => setFilterStatusId(e.target.value)}
+                className="bg-[#0c0e12] border border-[#262f3c] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500"
+              >
+                <option value="">全部狀態</option>
+                {statuses.map((st) => (
+                  <option key={st.id} value={st.id}>
+                    {st.name}
+                  </option>
+                ))}
+              </select>
 
-          <select
-            value={filterTag}
-            onChange={(e) => setFilterTag(e.target.value)}
-            className="bg-[#0c0e12] border border-[#262f3c] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500"
-          >
-            <option value="">全部標籤</option>
-            {tags.map((t) => (
-              <option key={t} value={t}>
-                # {t}
-              </option>
-            ))}
-          </select>
+              <select
+                value={filterTag}
+                onChange={(e) => setFilterTag(e.target.value)}
+                className="bg-[#0c0e12] border border-[#262f3c] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500"
+              >
+                <option value="">全部標籤</option>
+                {tags.map((t) => (
+                  <option key={t} value={t}>
+                    # {t}
+                  </option>
+                ))}
+              </select>
 
-          <button
-            onClick={() => setFilterRunningOnly(!filterRunningOnly)}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition cursor-pointer ${
-              filterRunningOnly
-                ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
-                : 'bg-[#0c0e12] border-[#262f3c] text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span className="w-2 h-2 rounded-full bg-emerald-400" />
-            <span>運行中 ({Object.keys(runningMap).length})</span>
-          </button>
+              <button
+                onClick={() => setFilterRunningOnly(!filterRunningOnly)}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition cursor-pointer ${
+                  filterRunningOnly
+                    ? 'bg-emerald-500/20 border-emerald-500/40 text-emerald-300'
+                    : 'bg-[#0c0e12] border-[#262f3c] text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span className="w-2 h-2 rounded-full bg-emerald-400" />
+                <span>運行中 ({Object.keys(runningMap).length})</span>
+              </button>
 
-          <button
-            onClick={() => setSortRunningFirst(!sortRunningFirst)}
-            className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition cursor-pointer ${
-              sortRunningFirst
-                ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
-                : 'bg-[#0c0e12] border-[#262f3c] text-slate-400 hover:text-slate-200'
-            }`}
-          >
-            <span>運行/勾選置頂最上排</span>
-          </button>
-        </div>
+              <button
+                onClick={() => setSortRunningFirst(!sortRunningFirst)}
+                className={`px-2.5 py-1.5 rounded-lg text-xs font-semibold border flex items-center gap-1.5 transition cursor-pointer ${
+                  sortRunningFirst
+                    ? 'bg-sky-500/20 border-sky-500/40 text-sky-300'
+                    : 'bg-[#0c0e12] border-[#262f3c] text-slate-400 hover:text-slate-200'
+                }`}
+              >
+                <span>置頂運行中</span>
+              </button>
 
-        <div className="text-xs text-slate-400">
-          共 <strong className="text-white">{filteredProfiles.length}</strong> 個環境
-        </div>
+              {/* IP 重複篩選快捷按鈕 */}
+              {(duplicateRunningProfileIds.size > 0 || duplicateAllProfileIds.size > 0) && (
+                <button
+                  onClick={() => setFilterDuplicateIpOnly(!filterDuplicateIpOnly)}
+                  className={`px-2.5 py-1.5 rounded-lg text-xs font-bold border flex items-center gap-1.5 transition cursor-pointer ${
+                    filterDuplicateIpOnly
+                      ? 'bg-rose-500 text-white border-rose-400 shadow-sm shadow-rose-950'
+                      : duplicateRunningProfileIds.size > 0
+                      ? 'bg-rose-500/20 border-rose-500/40 text-rose-300 hover:bg-rose-500/30 animate-pulse'
+                      : 'bg-amber-500/15 border-amber-500/30 text-amber-300 hover:bg-amber-500/25'
+                  }`}
+                  title="僅顯示外網 IP 重複/衝突的環境"
+                >
+                  <AlertTriangle className="w-3 h-3 text-current" />
+                  <span>
+                    {duplicateRunningProfileIds.size > 0
+                      ? `IP 重複 (${duplicateRunningProfileIds.size})`
+                      : `歷史 IP 重複 (${duplicateAllProfileIds.size})`}
+                  </span>
+                </button>
+              )}
+            </div>
+
+            <div className="text-xs text-slate-400 shrink-0">
+              共 <strong className="text-white">{filteredProfiles.length}</strong> 個環境
+            </div>
+          </div>
+        )}
       </div>
 
-      {/* Missing Fingerprint Core Warning Banner */}
-      {kernelInfo && !kernelInfo.hasFingerprintChromium && (
-        <div className="mx-6 mt-3 px-4 py-2.5 rounded-xl bg-amber-500/10 border border-amber-500/25 flex items-center justify-between text-xs text-amber-300 shrink-0 shadow-sm">
+      {/* Duplicate Egress IP Warning Bar (緊湊型單行提醒，不佔多餘高度) */}
+      {duplicateRunningIpMap.size > 0 && (
+        <div className="mx-6 mt-2 px-3.5 py-1.5 rounded-lg bg-rose-950/40 border border-rose-500/40 flex items-center justify-between text-xs text-rose-200 shrink-0 animate-in fade-in">
           <div className="flex items-center gap-2">
-            <AlertTriangle className="w-4 h-4 text-amber-400 shrink-0" />
-            <span>
-              <strong>防關聯提示：</strong>軟體尚未下載 <strong>Fingerprint-Chromium</strong> 底層防關聯核心，目前將降級使用系統 Chrome 運行。
+            <AlertTriangle className="w-3.5 h-3.5 text-rose-400 shrink-0 animate-pulse" />
+            <span className="font-bold text-rose-300">
+              ⚠️ 警告：偵測到執行中的環境外網 IP 相同！
+            </span>
+            <span className="text-[11px] text-rose-300/80 hidden sm:inline">
+              (共 {duplicateRunningProfileIds.size} 個環境衝突，有防關聯風險)
             </span>
           </div>
-          {onGoToSettings && (
-            <button
-              onClick={onGoToSettings}
-              className="px-3 py-1 rounded-lg bg-amber-500/20 hover:bg-amber-500/30 text-amber-200 font-bold transition cursor-pointer text-xs shrink-0"
-            >
-              前往「核心與設定」一鍵下載
-            </button>
-          )}
+          <button
+            type="button"
+            onClick={() => setFilterDuplicateIpOnly((prev) => !prev)}
+            className={`px-2.5 py-0.5 rounded text-[11px] font-bold transition cursor-pointer border ${
+              filterDuplicateIpOnly
+                ? 'bg-rose-500 text-white border-rose-400'
+                : 'bg-rose-900/40 hover:bg-rose-900/60 text-rose-200 border-rose-700/60'
+            }`}
+          >
+            {filterDuplicateIpOnly ? '顯示全部環境' : '僅篩選衝突環境'}
+          </button>
         </div>
       )}
 
@@ -988,9 +1084,8 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                   />
                 </th>
                 <th className="py-3 px-3">名稱</th>
-                <th className="py-3 px-3 w-32">操作</th>
                 <th className="py-3 px-3 w-28">狀態</th>
-                <th className="py-3 px-3">Proxy / 外網 IP</th>
+                <th className="py-3 px-3">代理</th>
                 <th className="py-3 px-3">標籤</th>
                 <th className="py-3 px-3 w-60">備註</th>
                 <th className="py-3 px-4 text-right">管理</th>
@@ -1003,6 +1098,17 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                 const isRunning = Boolean(runInfo?.running);
                 const isBusy = Boolean(loadingMap[profile.id]);
                 const statusObj = statuses.find((s) => s.id === profile.statusId) || statuses[0];
+
+                // IP 重複檢測資訊
+                const isDuplicateRunning = duplicateRunningProfileIds.has(profile.id);
+                const runningIp = runInfo?.publicIp?.trim();
+                const duplicateRunningProfiles = runningIp
+                  ? (duplicateRunningIpMap.get(runningIp) || []).filter((p) => p.id !== profile.id)
+                  : [];
+                const effectiveIp = (runningIp || profile.lastPublicIp)?.trim();
+                const duplicateAllProfiles = effectiveIp
+                  ? (duplicateAllIpMap.get(effectiveIp) || []).filter((p) => p.id !== profile.id)
+                  : [];
 
                 let resolvedProxy: ProxyItem | null = null;
                 if (profile.proxyMode === 'saved' && profile.proxyId) {
@@ -1020,7 +1126,9 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                   <tr
                     key={profile.id}
                     className={`transition ${
-                      isSelected
+                      isDuplicateRunning
+                        ? 'bg-rose-950/25 hover:bg-rose-950/35 border-l-2 border-l-rose-500'
+                        : isSelected
                         ? 'bg-sky-950/25 hover:bg-sky-950/35'
                         : isRunning
                         ? 'bg-emerald-950/10 hover:bg-[#12161c]'
@@ -1038,9 +1146,6 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
 
                     <td className="py-3 px-3">
                       <div className="flex items-center gap-2">
-                        <span className="px-1.5 py-0.5 rounded bg-[#181d24] text-slate-400 font-mono text-[10px]">
-                          #{profile.serialNumber}
-                        </span>
                         <span className="text-sm">
                           {profile.os === 'macos' ? '🍎' : profile.os === 'linux' ? '🐧' : '🪟'}
                         </span>
@@ -1050,54 +1155,12 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                             className="font-bold text-white hover:text-sky-300 cursor-pointer transition flex items-center gap-1.5"
                           >
                             <span>{profile.name}</span>
-                            {extSet.size > 0 && (
-                              <span
-                                title={`掛載 ${extSet.size} 個擴充功能`}
-                                className="inline-flex items-center px-1.5 py-0.2 rounded bg-sky-500/15 text-sky-300 text-[10px]"
-                              >
-                                🧩 {extSet.size}
-                              </span>
-                            )}
-                            {profile.cookies && profile.cookies.length > 0 && (
-                              <span
-                                title={`${profile.cookies.length} 筆 Cookie`}
-                                className="inline-flex items-center px-1.5 py-0.2 rounded bg-amber-500/15 text-amber-300 text-[10px]"
-                              >
-                                🍪 {profile.cookies.length}
-                              </span>
-                            )}
                           </div>
                           <div className="text-[10px] text-slate-500 font-mono">
                             Seed: {profile.fingerprint?.seed}
                           </div>
                         </div>
                       </div>
-                    </td>
-
-                    <td className="py-3 px-3">
-                      <button
-                        disabled={isBusy}
-                        onClick={() => handleLaunchOrStop(profile)}
-                        className={`w-24 py-1.5 px-2.5 rounded-lg font-bold text-xs flex items-center justify-center gap-1.5 transition cursor-pointer ${
-                          isRunning
-                            ? 'bg-emerald-500/20 hover:bg-rose-500/25 text-emerald-300 hover:text-rose-300 border border-emerald-500/40 hover:border-rose-500/40'
-                            : 'bg-[#181d24] hover:bg-sky-500 text-slate-200 hover:text-white border border-sky-500/40'
-                        }`}
-                      >
-                        {isBusy ? (
-                          <span>處理中</span>
-                        ) : isRunning ? (
-                          <>
-                            <Square className="w-3 h-3 fill-current" />
-                            <span>停止</span>
-                          </>
-                        ) : (
-                          <>
-                            <Play className="w-3 h-3 fill-current" />
-                            <span>啟動</span>
-                          </>
-                        )}
-                      </button>
                     </td>
 
                     <td className="py-3 px-3">
@@ -1121,75 +1184,26 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                     <td className="py-3 px-3">
                       <div className="flex flex-col gap-1">
                         {resolvedProxy ? (
-                          <div className="flex items-center gap-1.5">
-                            <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 font-mono text-[10px] uppercase">
-                              {resolvedProxy.type}
-                            </span>
-                            <span
-                              className="font-mono text-slate-200 text-[11px] truncate max-w-[130px]"
-                              title={`${resolvedProxy.host}:${resolvedProxy.port}`}
-                            >
-                              {resolvedProxy.host}:{resolvedProxy.port}
-                            </span>
-                          </div>
+                          <span
+                            className="font-medium text-slate-200 text-xs truncate max-w-[150px]"
+                            title={resolvedProxy.name || `${resolvedProxy.host}:${resolvedProxy.port}`}
+                          >
+                            {resolvedProxy.name || `${resolvedProxy.host}:${resolvedProxy.port}`}
+                          </span>
                         ) : (
-                          <span className="text-slate-500 text-[11px]">直連 (本機網路)</span>
+                          <span className="text-slate-500 text-xs">直連</span>
                         )}
 
-                        {/* 執行中的瀏覽器環境外網 IP 顯示 */}
-                        {isRunning && (
-                          <div className="flex items-center gap-1 mt-0.5">
-                            {runInfo?.ipLoading ? (
-                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px]">
-                                <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-400" />
-                                <span>偵測外網 IP...</span>
-                              </span>
-                            ) : runInfo?.publicIp ? (
-                              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 font-mono text-[11px] font-bold shadow-sm">
-                                <Globe className="w-3 h-3 text-emerald-400 shrink-0" />
-                                <span className="select-all tracking-wide">{runInfo.publicIp}</span>
-                                {runInfo.country && (
-                                  <span className="font-sans text-[10px] text-slate-400 font-normal">
-                                    ({runInfo.country}{runInfo.city ? ` · ${runInfo.city}` : ''})
-                                  </span>
-                                )}
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    navigator.clipboard.writeText(runInfo.publicIp || '');
-                                    showToast(`已複製外網 IP：${runInfo.publicIp}`);
-                                  }}
-                                  title="複製外網 IP"
-                                  className="text-slate-400 hover:text-white transition p-0.5 cursor-pointer ml-0.5"
-                                >
-                                  <Copy className="w-2.5 h-2.5" />
-                                </button>
-                                <button
-                                  type="button"
-                                  onClick={(e) => {
-                                    e.stopPropagation();
-                                    handleRefreshIp(profile.id);
-                                  }}
-                                  title="重新整理此環境外網 IP"
-                                  className="text-slate-400 hover:text-white transition p-0.5 cursor-pointer"
-                                >
-                                  <RotateCw className="w-2.5 h-2.5" />
-                                </button>
-                              </div>
-                            ) : (
-                              <button
-                                type="button"
-                                onClick={(e) => {
-                                  e.stopPropagation();
-                                  handleRefreshIp(profile.id);
-                                }}
-                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#181d24] hover:bg-[#202731] text-slate-400 hover:text-sky-300 text-[10px] border border-[#262f3c] transition cursor-pointer"
-                              >
-                                <RotateCw className="w-2.5 h-2.5" />
-                                <span>查詢外網 IP</span>
-                              </button>
-                            )}
+                        {/* 若運行中發生 IP 重複，保留警示標籤 */}
+                        {isDuplicateRunning && duplicateRunningProfiles.length > 0 && (
+                          <div
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-950/70 border border-rose-500/40 text-[10px] text-rose-300 font-semibold w-fit"
+                            title={`與環境「${duplicateRunningProfiles.map((p) => p.name).join('、')}」外網 IP 相同！`}
+                          >
+                            <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />
+                            <span className="truncate max-w-[150px]">
+                              ⚠️ 與「{duplicateRunningProfiles[0].name}」同 IP
+                            </span>
                           </div>
                         )}
                       </div>
@@ -1254,6 +1268,26 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
 
                     <td className="py-3 px-4 text-right">
                       <div className="inline-flex items-center gap-1">
+                        <button
+                          disabled={isBusy}
+                          onClick={() => handleLaunchOrStop(profile)}
+                          title={isBusy ? '處理中' : isRunning ? '停止環境' : '啟動環境'}
+                          className={`p-1.5 rounded-lg transition cursor-pointer ${
+                            isBusy
+                              ? 'bg-[#181d24] text-slate-500 opacity-60'
+                              : isRunning
+                              ? 'bg-rose-500/20 hover:bg-rose-500 text-rose-300 hover:text-white border border-rose-500/40'
+                              : 'bg-emerald-500/20 hover:bg-emerald-500 text-emerald-300 hover:text-white border border-emerald-500/40'
+                          }`}
+                        >
+                          {isBusy ? (
+                            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                          ) : isRunning ? (
+                            <Square className="w-3.5 h-3.5 fill-current" />
+                          ) : (
+                            <Play className="w-3.5 h-3.5 fill-current" />
+                          )}
+                        </button>
                         <button
                           onClick={() => onOpenEdit(profile)}
                           title="編輯"
@@ -1445,6 +1479,34 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                       </option>
                     ))}
                   </select>
+                )}
+
+                {/* 批量代理設定事前提醒 */}
+                {bulkProxyMode === 'single' && selectedIds.length > 1 && (
+                  <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-300 text-xs">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                    <span>
+                      注意：您將把同一個代理指派給 {selectedIds.length} 個環境，這將造成這些環境的外網 IP 完全相同！
+                    </span>
+                  </div>
+                )}
+
+                {bulkProxyMode === 'sequential' && selectedIds.length > proxies.length && proxies.length > 0 && (
+                  <div className="flex items-start gap-2 p-2.5 rounded-lg bg-amber-500/15 border border-amber-500/35 text-amber-300 text-xs">
+                    <AlertTriangle className="w-4 h-4 shrink-0 text-amber-400 mt-0.5" />
+                    <span>
+                      注意：勾選了 {selectedIds.length} 個環境，但目前可用代理僅 {proxies.length} 組，將有 {selectedIds.length - proxies.length} 個環境重複分配到相同 IP！
+                    </span>
+                  </div>
+                )}
+
+                {bulkProxyMode === 'none' && (
+                  <div className="flex items-start gap-2 p-2.5 rounded-lg bg-sky-500/15 border border-sky-500/35 text-sky-300 text-xs">
+                    <Info className="w-4 h-4 shrink-0 text-sky-400 mt-0.5" />
+                    <span>
+                      提示：清除代理後，所有被勾選的環境將以本機網路直連，共用您的真實寬頻外網 IP。
+                    </span>
+                  </div>
                 )}
               </div>
             )}

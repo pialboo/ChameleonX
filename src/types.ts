@@ -100,6 +100,10 @@ export interface ProfileItem {
   cookies: any[];
   lastLaunchedAt?: string | null;
   launchCount: number;
+  lastPublicIp?: string | null;
+  lastCountry?: string | null;
+  lastCity?: string | null;
+  lastIpCheckedAt?: string | null;
   createdAt: string;
 }
 

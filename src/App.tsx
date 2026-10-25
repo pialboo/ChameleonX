@@ -176,6 +176,7 @@ export const App: React.FC = () => {
         isOpen={modalOpen}
         initialMode={modalMode}
         editingProfile={editingProfile}
+        profiles={state.profiles}
         proxies={state.proxies}
         extensions={state.extensions}
         statuses={state.statuses}

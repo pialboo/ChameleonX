@@ -175,7 +175,10 @@ export const ProxiesPage: React.FC<ProxiesPageProps> = ({
     }
     try {
       const res = await api.addProxies({ rawText: batchRawText, defaultType: batchType });
-      showToast(`已批量新增 ${res.addedCount} 組代理`);
+      const skipped = (res as any).skippedCount || 0;
+      showToast(
+        `已批量新增 ${res.addedCount} 組代理${skipped > 0 ? `（已自動排除 ${skipped} 組重複代理）` : ''}`
+      );
       setBatchRawText('');
       setShowModal(false);
       onRefresh();
@@ -356,7 +359,22 @@ export const ProxiesPage: React.FC<ProxiesPageProps> = ({
                         </span>
                       )}
                     </td>
-                    <td className="py-3 px-4 text-slate-300">{boundCount}</td>
+                    <td className="py-3 px-4">
+                      {boundCount > 1 ? (
+                        <span
+                          className="px-2 py-0.5 rounded-full bg-rose-500/20 text-rose-300 font-bold border border-rose-500/35 text-[11px]"
+                          title={`已被 ${boundCount} 個環境綁定，同時運行有外網 IP 重複風險！`}
+                        >
+                          ⚠️ {boundCount} 個環境 (重複)
+                        </span>
+                      ) : boundCount === 1 ? (
+                        <span className="px-2 py-0.5 rounded-full bg-emerald-500/15 text-emerald-300 font-medium text-[11px]">
+                          1 個環境 (專屬)
+                        </span>
+                      ) : (
+                        <span className="text-slate-500 text-[11px]">0 (未使用)</span>
+                      )}
+                    </td>
                     <td className="py-3 px-4 text-right space-x-1.5">
                       <button
                         onClick={() => handleTestSingle(px.id)}

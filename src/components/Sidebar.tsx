@@ -96,7 +96,6 @@ export const Sidebar: React.FC<SidebarProps> = ({
             <span className="font-extrabold text-base tracking-tight text-white flex items-center">
               Chameleon<span className="text-sky-400">X</span>
             </span>
-            <span className="text-[10px] text-slate-400 font-medium">防關聯指紋瀏覽器</span>
           </div>
         </div>
       </div>
