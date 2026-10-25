@@ -24,6 +24,8 @@ const {
   getRunningStatusMap,
   tileRunningWindows,
   bringRunningWindowsToTop,
+  syncAllProfilesBookmarks,
+  detectProfileEgressIp,
 } = require('./browserLauncher.cjs');
 const {
   getSyncState,
@@ -896,6 +898,15 @@ function createApiServer(electronDialogHandler = null) {
     res.json({ tags: state.tags });
   });
 
+  app.post('/api/bookmarks/sync-all', (req, res) => {
+    try {
+      const result = syncAllProfilesBookmarks();
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
   app.post('/api/bookmarks', (req, res) => {
     const state = store.getState();
     const bm = {
@@ -905,6 +916,9 @@ function createApiServer(electronDialogHandler = null) {
     };
     state.bookmarks.push(bm);
     store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
     res.json(bm);
   });
 
@@ -912,7 +926,19 @@ function createApiServer(electronDialogHandler = null) {
     const state = store.getState();
     state.bookmarks = state.bookmarks.filter((b) => b.id !== req.params.id);
     store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
     res.json({ deleted: true });
+  });
+
+  app.post('/api/running-profiles/:id/refresh-ip', async (req, res) => {
+    try {
+      const result = await detectProfileEgressIp(req.params.id);
+      res.json({ ok: Boolean(result), ...(result || {}) });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
   });
 
   app.put('/api/settings', (req, res) => {

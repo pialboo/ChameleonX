@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
 import {
   Play,
   Square,
@@ -26,6 +26,10 @@ import {
   FileText,
   AlertTriangle,
   Archive,
+  Globe,
+  ChevronDown,
+  Bookmark,
+  Loader2,
 } from 'lucide-react';
 import {
   ProfileItem,
@@ -33,6 +37,7 @@ import {
   ExtensionItem,
   StatusItem,
   FolderItem,
+  BookmarkItem,
   RunningInfo,
   AppSettings,
   SyncState,
@@ -47,6 +52,7 @@ interface BrowsersPageProps {
   statuses: StatusItem[];
   folders: FolderItem[];
   tags: string[];
+  bookmarks?: BookmarkItem[];
   runningMap: Record<string, RunningInfo>;
   settings: AppSettings;
   syncState?: SyncState;
@@ -66,6 +72,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
   statuses,
   folders,
   tags,
+  bookmarks = [],
   runningMap,
   settings,
   syncState,
@@ -107,6 +114,58 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
   const [bulkFolderId, setBulkFolderId] = useState('fld-all');
 
   const [syncUrlInput, setSyncUrlInput] = useState('');
+  const [isUrlDropdownOpen, setIsUrlDropdownOpen] = useState(false);
+  const [highlightedBmIndex, setHighlightedBmIndex] = useState(-1);
+  const urlComboboxRef = useRef<HTMLDivElement>(null);
+
+  // Click outside to close the URL combobox dropdown
+  useEffect(() => {
+    const handleClickOutside = (e: MouseEvent) => {
+      if (urlComboboxRef.current && !urlComboboxRef.current.contains(e.target as Node)) {
+        setIsUrlDropdownOpen(false);
+      }
+    };
+    document.addEventListener('mousedown', handleClickOutside);
+    return () => document.removeEventListener('mousedown', handleClickOutside);
+  }, []);
+
+  const filteredBookmarks = useMemo(() => {
+    const q = syncUrlInput.trim().toLowerCase();
+    if (!q) return bookmarks;
+    return bookmarks.filter(
+      (bm) => bm.title.toLowerCase().includes(q) || bm.url.toLowerCase().includes(q)
+    );
+  }, [bookmarks, syncUrlInput]);
+
+  const handleSelectBookmark = (url: string, autoNavigate = false) => {
+    setSyncUrlInput(url);
+    setIsUrlDropdownOpen(false);
+    setHighlightedBmIndex(-1);
+    if (autoNavigate) {
+      api
+        .sendSyncCommand({ action: 'navigate', url })
+        .then((res) => {
+          showToast(`已同步導覽 ${res.sentCount} 個視窗至 ${url}`);
+        })
+        .catch((err) => showToast(err.message, 'error'));
+    }
+  };
+
+  const handleRefreshIp = async (profileId: string) => {
+    try {
+      showToast('正在偵測外網 IP...');
+      const res = await api.refreshRunningIp(profileId);
+      if (res.publicIp) {
+        showToast(`外網 IP：${res.publicIp} (${res.country || ''} ${res.city || ''})`);
+      } else {
+        showToast('無法取得外網 IP，請確認網路或代理設定', 'error');
+      }
+      onRefresh();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    }
+  };
+
   const [diffTextModalOpen, setDiffTextModalOpen] = useState(false);
   const [diffTextContent, setDiffTextContent] = useState('');
   const [sortRunningFirst, setSortRunningFirst] = useState(false);
@@ -611,20 +670,165 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
               >
                 <RotateCw className="w-3.5 h-3.5" />
               </button>
-              <input
-                type="text"
-                value={syncUrlInput}
-                onChange={(e) => setSyncUrlInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleSyncCommand('navigate')}
-                placeholder="輸入網址同步跳轉所有視窗..."
-                className="w-56 bg-[#0c0e12] border border-[#202731] rounded-lg px-2.5 py-1 text-xs text-white outline-none focus:border-emerald-500"
-              />
-              <button
-                onClick={() => handleSyncCommand('navigate')}
-                className="px-2.5 py-1 rounded-lg bg-emerald-600/80 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer transition"
-              >
-                前往
-              </button>
+              {/* 搜尋、選擇、輸入合一的同步導覽 Combobox */}
+              <div ref={urlComboboxRef} className="relative flex items-center">
+                <div className="relative flex items-center">
+                  <Bookmark className="w-3.5 h-3.5 text-slate-500 absolute left-2.5 pointer-events-none" />
+                  <input
+                    type="text"
+                    value={syncUrlInput}
+                    onFocus={() => setIsUrlDropdownOpen(true)}
+                    onChange={(e) => {
+                      setSyncUrlInput(e.target.value);
+                      setIsUrlDropdownOpen(true);
+                      setHighlightedBmIndex(-1);
+                    }}
+                    onKeyDown={(e) => {
+                      if (e.key === 'ArrowDown') {
+                        e.preventDefault();
+                        setIsUrlDropdownOpen(true);
+                        setHighlightedBmIndex((prev) =>
+                          prev < filteredBookmarks.length - 1 ? prev + 1 : 0
+                        );
+                      } else if (e.key === 'ArrowUp') {
+                        e.preventDefault();
+                        setIsUrlDropdownOpen(true);
+                        setHighlightedBmIndex((prev) =>
+                          prev > 0 ? prev - 1 : filteredBookmarks.length - 1
+                        );
+                      } else if (e.key === 'Enter') {
+                        if (
+                          isUrlDropdownOpen &&
+                          highlightedBmIndex >= 0 &&
+                          filteredBookmarks[highlightedBmIndex]
+                        ) {
+                          handleSelectBookmark(
+                            filteredBookmarks[highlightedBmIndex].url,
+                            true
+                          );
+                        } else {
+                          setIsUrlDropdownOpen(false);
+                          handleSyncCommand('navigate');
+                        }
+                      } else if (e.key === 'Escape') {
+                        setIsUrlDropdownOpen(false);
+                      }
+                    }}
+                    placeholder="搜尋書籤、選擇或輸入網址..."
+                    className="w-64 bg-[#0c0e12] border border-[#202731] rounded-l-lg pl-8 pr-12 py-1 text-xs text-white outline-none focus:border-emerald-500 transition"
+                  />
+                  <div className="absolute right-1.5 flex items-center gap-0.5">
+                    {syncUrlInput && (
+                      <button
+                        type="button"
+                        onClick={() => {
+                          setSyncUrlInput('');
+                          setHighlightedBmIndex(-1);
+                        }}
+                        className="p-0.5 text-slate-500 hover:text-slate-300 cursor-pointer"
+                        title="清除輸入"
+                      >
+                        <X className="w-3 h-3" />
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => setIsUrlDropdownOpen((prev) => !prev)}
+                      className="p-0.5 text-slate-500 hover:text-slate-300 cursor-pointer"
+                      title="展開預設書籤選單"
+                    >
+                      <ChevronDown
+                        className={`w-3.5 h-3.5 transition-transform ${
+                          isUrlDropdownOpen ? 'rotate-180 text-emerald-400' : ''
+                        }`}
+                      />
+                    </button>
+                  </div>
+                </div>
+
+                <button
+                  onClick={() => {
+                    setIsUrlDropdownOpen(false);
+                    handleSyncCommand('navigate');
+                  }}
+                  className="px-3 py-1 rounded-r-lg bg-emerald-600/80 hover:bg-emerald-500 text-white text-xs font-semibold cursor-pointer transition border border-l-0 border-emerald-500/50 flex items-center gap-1 shrink-0"
+                >
+                  前往
+                </button>
+
+                {/* 下拉選擇面板 */}
+                {isUrlDropdownOpen && (
+                  <div className="absolute top-full left-0 mt-1.5 w-80 bg-[#12161c] border border-[#2b3543] rounded-xl shadow-2xl z-50 overflow-hidden divide-y divide-[#1e2530] animate-in fade-in duration-150">
+                    <div className="px-3 py-1.5 bg-[#161b22] flex items-center justify-between text-[11px] text-slate-400">
+                      <span className="font-semibold flex items-center gap-1.5">
+                        <Bookmark className="w-3 h-3 text-emerald-400" />
+                        <span>快速選擇書籤 ({filteredBookmarks.length})</span>
+                      </span>
+                      <span className="text-[10px] text-slate-500">點擊填入 / 按 Enter 前往</span>
+                    </div>
+
+                    <div className="max-h-60 overflow-y-auto p-1 space-y-0.5">
+                      {filteredBookmarks.length > 0 ? (
+                        filteredBookmarks.map((bm, idx) => {
+                          const isHighlighted = idx === highlightedBmIndex;
+                          return (
+                            <div
+                              key={bm.id}
+                              onMouseEnter={() => setHighlightedBmIndex(idx)}
+                              onClick={() => handleSelectBookmark(bm.url, false)}
+                              className={`group px-2.5 py-1.5 rounded-lg text-xs cursor-pointer flex items-center justify-between transition ${
+                                isHighlighted
+                                  ? 'bg-emerald-600/20 text-emerald-200 border border-emerald-500/30'
+                                  : 'text-slate-200 hover:bg-[#1a212b]'
+                              }`}
+                            >
+                              <div className="min-w-0 flex-1 pr-2">
+                                <div className="font-bold flex items-center gap-1.5 truncate">
+                                  <span>🔖</span>
+                                  <span>{bm.title}</span>
+                                </div>
+                                <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
+                                  {bm.url}
+                                </div>
+                              </div>
+
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleSelectBookmark(bm.url, true);
+                                }}
+                                className="px-2 py-0.5 rounded bg-emerald-600/40 hover:bg-emerald-500 text-white text-[10px] font-medium opacity-0 group-hover:opacity-100 transition shrink-0 cursor-pointer"
+                                title="直接跳轉至此書籤"
+                              >
+                                直接前往
+                              </button>
+                            </div>
+                          );
+                        })
+                      ) : (
+                        <div className="px-3 py-4 text-center text-xs text-slate-400">
+                          {bookmarks.length === 0 ? (
+                            <div>
+                              <span>尚未設定常用書籤</span>
+                              <div className="text-[10px] text-slate-500 mt-0.5">
+                                可至側邊欄「書籤設定」新增
+                              </div>
+                            </div>
+                          ) : (
+                            <div>
+                              <span>無相符書籤</span>
+                              <div className="text-[10px] text-slate-500 mt-0.5">
+                                可直接輸入網址並點擊「前往」
+                              </div>
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+              </div>
               <button
                 onClick={() => setDiffTextModalOpen(true)}
                 title="依序填入不同文字到各個視窗焦點輸入框"
@@ -786,7 +990,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                 <th className="py-3 px-3">名稱</th>
                 <th className="py-3 px-3 w-32">操作</th>
                 <th className="py-3 px-3 w-28">狀態</th>
-                <th className="py-3 px-3">Proxy</th>
+                <th className="py-3 px-3">Proxy / 外網 IP</th>
                 <th className="py-3 px-3">標籤</th>
                 <th className="py-3 px-3 w-60">備註</th>
                 <th className="py-3 px-4 text-right">管理</th>
@@ -915,18 +1119,80 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                     </td>
 
                     <td className="py-3 px-3">
-                      {resolvedProxy ? (
-                        <div className="flex items-center gap-1.5">
-                          <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 font-mono text-[10px] uppercase">
-                            {resolvedProxy.type}
-                          </span>
-                          <span className="font-mono text-slate-200 text-[11px]">
-                            {resolvedProxy.host}:{resolvedProxy.port}
-                          </span>
-                        </div>
-                      ) : (
-                        <span className="text-slate-500 text-[11px]">直連</span>
-                      )}
+                      <div className="flex flex-col gap-1">
+                        {resolvedProxy ? (
+                          <div className="flex items-center gap-1.5">
+                            <span className="px-1.5 py-0.5 rounded bg-sky-500/15 text-sky-300 font-mono text-[10px] uppercase">
+                              {resolvedProxy.type}
+                            </span>
+                            <span
+                              className="font-mono text-slate-200 text-[11px] truncate max-w-[130px]"
+                              title={`${resolvedProxy.host}:${resolvedProxy.port}`}
+                            >
+                              {resolvedProxy.host}:{resolvedProxy.port}
+                            </span>
+                          </div>
+                        ) : (
+                          <span className="text-slate-500 text-[11px]">直連 (本機網路)</span>
+                        )}
+
+                        {/* 執行中的瀏覽器環境外網 IP 顯示 */}
+                        {isRunning && (
+                          <div className="flex items-center gap-1 mt-0.5">
+                            {runInfo?.ipLoading ? (
+                              <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-300 border border-amber-500/20 text-[10px]">
+                                <Loader2 className="w-2.5 h-2.5 animate-spin text-amber-400" />
+                                <span>偵測外網 IP...</span>
+                              </span>
+                            ) : runInfo?.publicIp ? (
+                              <div className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded bg-emerald-500/15 border border-emerald-500/35 text-emerald-300 font-mono text-[11px] font-bold shadow-sm">
+                                <Globe className="w-3 h-3 text-emerald-400 shrink-0" />
+                                <span className="select-all tracking-wide">{runInfo.publicIp}</span>
+                                {runInfo.country && (
+                                  <span className="font-sans text-[10px] text-slate-400 font-normal">
+                                    ({runInfo.country}{runInfo.city ? ` · ${runInfo.city}` : ''})
+                                  </span>
+                                )}
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    navigator.clipboard.writeText(runInfo.publicIp || '');
+                                    showToast(`已複製外網 IP：${runInfo.publicIp}`);
+                                  }}
+                                  title="複製外網 IP"
+                                  className="text-slate-400 hover:text-white transition p-0.5 cursor-pointer ml-0.5"
+                                >
+                                  <Copy className="w-2.5 h-2.5" />
+                                </button>
+                                <button
+                                  type="button"
+                                  onClick={(e) => {
+                                    e.stopPropagation();
+                                    handleRefreshIp(profile.id);
+                                  }}
+                                  title="重新整理此環境外網 IP"
+                                  className="text-slate-400 hover:text-white transition p-0.5 cursor-pointer"
+                                >
+                                  <RotateCw className="w-2.5 h-2.5" />
+                                </button>
+                              </div>
+                            ) : (
+                              <button
+                                type="button"
+                                onClick={(e) => {
+                                  e.stopPropagation();
+                                  handleRefreshIp(profile.id);
+                                }}
+                                className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-[#181d24] hover:bg-[#202731] text-slate-400 hover:text-sky-300 text-[10px] border border-[#262f3c] transition cursor-pointer"
+                              >
+                                <RotateCw className="w-2.5 h-2.5" />
+                                <span>查詢外網 IP</span>
+                              </button>
+                            )}
+                          </div>
+                        )}
+                      </div>
                     </td>
 
                     <td className="py-3 px-3">

@@ -302,7 +302,7 @@ function buildProfileCoreExtension(profileDir, profile, settings = {}) {
     name: `AntyCore - ${profile.name}`,
     version: '2.1.0',
     description: 'Dolphin Anty 環境指紋防護與多視窗同步核心',
-    permissions: ['tabs'],
+    permissions: ['tabs', 'bookmarks'],
     host_permissions: ['http://127.0.0.1/*'],
     background: {
       service_worker: 'background.js',
@@ -513,7 +513,9 @@ function connectWs() {
     ws.onmessage = async (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'SYNC_COMMAND' && msg.payload) {
+        if (msg.type === 'SYNC_BOOKMARKS' && Array.isArray(msg.bookmarks)) {
+          syncBookmarksToChrome(msg.bookmarks);
+        } else if (msg.type === 'SYNC_COMMAND' && msg.payload) {
           const p = msg.payload;
           const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
           const activeTab = tabs[0];
@@ -567,6 +569,38 @@ chrome.runtime.onMessage.addListener((message) => {
     }
   }
 });
+
+function syncBookmarksToChrome(bms) {
+  try {
+    if (!chrome.bookmarks) return;
+    chrome.bookmarks.getTree((tree) => {
+      if (!tree || !tree.length) return;
+      const root = tree[0];
+      const bar = (root.children || []).find((c) => c.id === '1' || (c.title && (c.title.includes('Bookmark') || c.title.includes('書籤')))) || root.children?.[0];
+      if (!bar) return;
+
+      chrome.bookmarks.getChildren(bar.id, (children) => {
+        const removePromises = (children || []).map((ch) => {
+          return new Promise((res) => {
+            chrome.bookmarks.removeTree(ch.id, () => res());
+          });
+        });
+
+        Promise.all(removePromises).then(() => {
+          (bms || []).forEach((bm) => {
+            if (bm && bm.url) {
+              chrome.bookmarks.create({
+                parentId: bar.id,
+                title: bm.title || bm.name || '書籤',
+                url: bm.url
+              });
+            }
+          });
+        });
+      });
+    });
+  } catch (e) {}
+}
 `;
 
   const syncContentJs = `(function() {

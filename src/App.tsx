@@ -94,6 +94,7 @@ export const App: React.FC = () => {
           statuses={state.statuses}
           folders={state.folders}
           tags={state.tags}
+          bookmarks={state.bookmarks}
           runningMap={state.runningMap}
           settings={state.settings}
           syncState={state.syncState}
@@ -130,6 +131,7 @@ export const App: React.FC = () => {
       {activeTab === 'bookmarks' && (
         <BookmarksPage
           bookmarks={state.bookmarks}
+          profileCount={state.profiles.length}
           onRefresh={fetchState}
           showToast={showToast}
         />

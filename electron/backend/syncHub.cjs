@@ -3,7 +3,7 @@ const path = require('path');
 const WebSocket = require('ws');
 const { WebSocketServer } = require('ws');
 const url = require('url');
-const { PROFILES_DIR } = require('./store.cjs');
+const { store, PROFILES_DIR } = require('./store.cjs');
 const { getRunningProfilesMap } = require('./browserLauncher.cjs');
 
 /**
@@ -495,6 +495,13 @@ function attachSyncWebSocketServer(httpServer) {
       connectedWsClients.set(profileId, new Set());
     }
     connectedWsClients.get(profileId).add(ws);
+
+    // Push initial bookmarks sync to this connected profile extension
+    try {
+      const currentBookmarks = store.getState().bookmarks || [];
+      ws.send(JSON.stringify({ type: 'SYNC_BOOKMARKS', bookmarks: currentBookmarks }));
+    } catch (e) {}
+
     ws.on('close', () => {
       const set = connectedWsClients.get(profileId);
       if (set) {
@@ -632,10 +639,33 @@ async function distributeDiffText(lines = [], specificProfileIds = null) {
   return { sentCount, targetCount: targets.length };
 }
 
+/**
+ * Broadcast updated bookmarks to all connected running extensions
+ */
+function broadcastBookmarks(bookmarks = []) {
+  const payload = JSON.stringify({
+    type: 'SYNC_BOOKMARKS',
+    bookmarks: bookmarks || [],
+  });
+  let sentCount = 0;
+  for (const set of connectedWsClients.values()) {
+    for (const client of set) {
+      if (client.readyState === WebSocket.OPEN) {
+        try {
+          client.send(payload);
+          sentCount++;
+        } catch (e) {}
+      }
+    }
+  }
+  return sentCount;
+}
+
 module.exports = {
   attachSyncWebSocketServer,
   getSyncState,
   updateSyncState,
   broadcastSyncCommand,
   distributeDiffText,
+  broadcastBookmarks,
 };

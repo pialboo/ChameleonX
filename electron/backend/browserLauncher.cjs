@@ -601,7 +601,15 @@ async function launchProfile(profileId, windowBounds = null) {
     anonymizedProxyUrl,
     startedAt,
     kernelName: kernelInfo.activeKernel.name,
+    publicIp: null,
+    country: null,
+    city: null,
+    isp: null,
+    ipLoading: true,
   });
+
+  // Automatically detect egress public IP in background
+  detectProfileEgressIp(profile.id).catch(() => {});
 
   // Update profile stats
   profile.lastLaunchedAt = startedAt;
@@ -828,6 +836,113 @@ function testProxyConnection(proxyConfig) {
   });
 }
 
+/**
+ * Synchronize custom bookmarks to all existing profile folders on disk and broadcast to live running browsers
+ */
+function syncAllProfilesBookmarks() {
+  const state = store.getState();
+  const bookmarks = state.bookmarks || [];
+  let count = 0;
+  for (const profile of state.profiles || []) {
+    const profileDir = path.join(PROFILES_DIR, profile.id);
+    try {
+      syncProfileBookmarks(profileDir, bookmarks);
+      count++;
+    } catch (e) {}
+  }
+  let liveCount = 0;
+  try {
+    const syncHub = require('./syncHub.cjs');
+    if (typeof syncHub.broadcastBookmarks === 'function') {
+      liveCount = syncHub.broadcastBookmarks(bookmarks);
+    }
+  } catch (e) {}
+
+  return { count, liveCount };
+}
+
+/**
+ * Detect egress external IP for a running profile
+ */
+async function detectProfileEgressIp(profileId) {
+  const state = store.getState();
+  const profile = (state.profiles || []).find((p) => p.id === profileId);
+  const entry = runningProfiles.get(profileId);
+  if (!entry) return null;
+
+  entry.ipLoading = true;
+
+  // Determine proxy configuration
+  let effectiveProxy = null;
+  if (profile) {
+    if (profile.proxyMode === 'saved' && profile.proxyId) {
+      effectiveProxy = (state.proxies || []).find((px) => px.id === profile.proxyId) || null;
+    } else if (profile.proxyMode === 'custom' && profile.proxy && profile.proxy.host && profile.proxy.port) {
+      effectiveProxy = profile.proxy;
+    }
+  }
+
+  const curlArgs = ['-s', '-m', '6'];
+  if (entry.anonymizedProxyUrl) {
+    curlArgs.push('-x', entry.anonymizedProxyUrl);
+  } else if (effectiveProxy && effectiveProxy.host && effectiveProxy.port) {
+    let proto = (effectiveProxy.type || 'http').toLowerCase();
+    if (proto === 'sock5' || proto === 'socks') proto = 'socks5';
+    if (proto === 'sock4') proto = 'socks4';
+    const proxyUrl = `${proto}://${effectiveProxy.host}:${effectiveProxy.port}`;
+    curlArgs.push('-x', proxyUrl);
+    if (effectiveProxy.username && effectiveProxy.password) {
+      curlArgs.push('-U', `${effectiveProxy.username}:${effectiveProxy.password}`);
+    }
+  }
+
+  const targetUrl = 'http://ip-api.com/json/?fields=status,message,countryCode,country,city,timezone,query,isp';
+  const fullArgs = [...curlArgs, targetUrl];
+
+  return new Promise((resolve) => {
+    execFile('curl.exe', fullArgs, { timeout: 7000 }, (err, stdout) => {
+      let result = null;
+      if (!err && stdout) {
+        try {
+          const data = JSON.parse(stdout.trim());
+          if (data && data.status === 'success' && data.query) {
+            result = {
+              publicIp: data.query,
+              country: data.countryCode || data.country || '',
+              city: data.city || '',
+              isp: data.isp || '',
+            };
+          }
+        } catch (e) {}
+      }
+
+      if (result) {
+        entry.publicIp = result.publicIp;
+        entry.country = result.country;
+        entry.city = result.city;
+        entry.isp = result.isp;
+        entry.ipLoading = false;
+        resolve(result);
+      } else {
+        const fallbackArgs = [...curlArgs, 'https://api.ipify.org?format=json'];
+        execFile('curl.exe', fallbackArgs, { timeout: 6000 }, (fbErr, fbStdout) => {
+          entry.ipLoading = false;
+          if (!fbErr && fbStdout) {
+            try {
+              const fbData = JSON.parse(fbStdout.trim());
+              if (fbData && fbData.ip) {
+                entry.publicIp = fbData.ip;
+                return resolve({ publicIp: fbData.ip });
+              }
+            } catch (e) {}
+          }
+          resolve(null);
+        });
+      }
+    });
+  });
+}
+
 function getRunningStatusMap() {
   const out = {};
   for (const [id, info] of runningProfiles.entries()) {
@@ -837,6 +952,11 @@ function getRunningStatusMap() {
       debugPort: info.debugPort,
       startedAt: info.startedAt,
       kernelName: info.kernelName,
+      publicIp: info.publicIp || null,
+      country: info.country || null,
+      city: info.city || null,
+      isp: info.isp || null,
+      ipLoading: Boolean(info.ipLoading),
     };
   }
   return out;
@@ -1060,4 +1180,6 @@ module.exports = {
   getRunningProfilesMap,
   tileRunningWindows,
   bringRunningWindowsToTop,
+  syncAllProfilesBookmarks,
+  detectProfileEgressIp,
 };

@@ -205,6 +205,15 @@ export const api = {
   deleteBookmark: (id: string) =>
     request(`/bookmarks/${id}`, { method: 'DELETE' }),
 
+  syncAllBookmarks: () =>
+    request<{ ok: boolean; count: number; liveCount: number }>('/bookmarks/sync-all', { method: 'POST' }),
+
+  refreshRunningIp: (profileId: string) =>
+    request<{ ok: boolean; publicIp?: string; country?: string; city?: string; isp?: string }>(
+      `/running-profiles/${profileId}/refresh-ip`,
+      { method: 'POST' }
+    ),
+
   updateSettings: (payload: any) =>
     request('/settings', { method: 'PUT', body: JSON.stringify(payload) }),
 

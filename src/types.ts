@@ -122,6 +122,11 @@ export interface RunningInfo {
   pid: number;
   startedAt: string;
   kernelName: string;
+  publicIp?: string | null;
+  country?: string | null;
+  city?: string | null;
+  isp?: string | null;
+  ipLoading?: boolean;
 }
 
 export interface KernelInfo {

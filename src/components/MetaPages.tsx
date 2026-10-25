@@ -1,21 +1,24 @@
 import React, { useState } from 'react';
-import { Bookmark, Tags, Plus, Trash2, Folder } from 'lucide-react';
+import { Bookmark, Tags, Plus, Trash2, Folder, RefreshCw, Loader2, Info } from 'lucide-react';
 import { BookmarkItem, StatusItem, FolderItem } from '../types';
 import { api } from '../api';
 
 interface BookmarksPageProps {
   bookmarks: BookmarkItem[];
+  profileCount?: number;
   onRefresh: () => void;
   showToast: (msg: string, type?: 'success' | 'error') => void;
 }
 
 export const BookmarksPage: React.FC<BookmarksPageProps> = ({
   bookmarks,
+  profileCount = 0,
   onRefresh,
   showToast,
 }) => {
   const [title, setTitle] = useState('');
   const [url, setUrl] = useState('');
+  const [syncingAll, setSyncingAll] = useState(false);
 
   const handleAdd = async () => {
     if (!title.trim() || !url.trim()) {
@@ -25,20 +28,64 @@ export const BookmarksPage: React.FC<BookmarksPageProps> = ({
     await api.createBookmark(title.trim(), url.trim());
     setTitle('');
     setUrl('');
-    showToast('已新增書籤');
+    showToast('已新增書籤並自動同步至環境');
     onRefresh();
+  };
+
+  const handleSyncAll = async () => {
+    try {
+      setSyncingAll(true);
+      const res = await api.syncAllBookmarks();
+      showToast(
+        `✅ 已成功同步 ${bookmarks.length} 個書籤至全部 ${res.count || profileCount || 0} 個環境${
+          res.liveCount > 0 ? `（含 ${res.liveCount} 個運行中視窗即時生效）` : ''
+        }！`
+      );
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setSyncingAll(false);
+    }
   };
 
   return (
     <div className="flex-1 flex flex-col h-screen overflow-hidden bg-[#0c0e12]">
-      <div className="px-6 py-4 bg-[#12161c] border-b border-[#262f3c] shrink-0">
+      <div className="px-6 py-4 bg-[#12161c] border-b border-[#262f3c] shrink-0 flex items-center justify-between">
         <h1 className="text-base font-bold text-white flex items-center gap-2">
           <Bookmark className="w-4 h-4 text-sky-400" />
           <span>書籤設定</span>
+          <span className="text-xs font-normal text-slate-400">({bookmarks.length} 筆)</span>
         </h1>
+
+        <button
+          onClick={handleSyncAll}
+          disabled={syncingAll || bookmarks.length === 0}
+          className="px-3.5 py-1.5 rounded-lg bg-emerald-600 hover:bg-emerald-500 disabled:opacity-50 disabled:cursor-not-allowed text-xs font-bold text-white flex items-center gap-1.5 cursor-pointer shadow-sm transition"
+        >
+          {syncingAll ? (
+            <Loader2 className="w-3.5 h-3.5 animate-spin" />
+          ) : (
+            <RefreshCw className="w-3.5 h-3.5" />
+          )}
+          <span>同步書籤至所有環境</span>
+          {profileCount > 0 && (
+            <span className="px-1.5 py-0.5 rounded-full bg-emerald-800 text-[10px] font-mono">
+              {profileCount} 個環境
+            </span>
+          )}
+        </button>
       </div>
 
       <div className="flex-1 overflow-y-auto p-6 space-y-5">
+        {/* Info Tip Banner */}
+        <div className="bg-[#12161c] border border-sky-500/30 rounded-xl p-3.5 flex items-start gap-2.5 text-xs text-slate-300">
+          <Info className="w-4 h-4 text-sky-400 shrink-0 mt-0.5" />
+          <div className="leading-relaxed">
+            <span className="text-sky-300 font-bold">書籤即時同步說明：</span>
+            此處建立的書籤會自動寫入所有已建立環境的 Chrome 書籤列；點擊「同步書籤至所有環境」可即時寫入現有環境資料夾，並透過即時通道在所有開啟的瀏覽器中自動生效！在「瀏覽器環境」頂部【同步操作】的快速前往欄位中，也能直接搜尋與點選已設定的書籤！
+          </div>
+        </div>
+
         <div className="bg-[#12161c] border border-[#262f3c] rounded-xl p-4 flex items-end gap-3">
           <div className="flex-1">
             <label className="block text-xs font-semibold text-slate-300 mb-1.5">書籤名稱</label>

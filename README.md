@@ -2,13 +2,18 @@
 
 這是一套專為多帳號隔離、電商矩陣、社群營運與手動防關聯打造的**全繁體中文獨立桌面軟體（Electron）**，具備變色龍般靈活的多維指紋擬態與無限制環境管理能力。
 
-> 📥 **Windows 安裝程式直接下載**：[點此前往 GitHub Releases 下載最新版安裝檔 (`ChameleonX Setup 1.0.0.exe`)](https://github.com/pialboo/ChameleonX/releases/latest)
+> 📥 **Windows 安裝程式直接下載**：[點此前往 GitHub Releases 下載最新版安裝檔 (`ChameleonX Setup 1.0.1.exe`)](https://github.com/pialboo/ChameleonX/releases/latest)
 
 ## ✨ 核心特色
 
 1. **無數量與功能限制**：
    - 環境數量無上限（完全取決於您的硬碟空間），所有資料保存在本地 `data/db.json` 與 `data/profiles/`。
-2. **雙重底層指紋防護（Fingerprint-Chromium + AntyCore）**：
+2. **多視窗同步操作與快速導覽（Synchronizer & Bookmarks）**：
+   - **多視窗即時同步**：滑鼠點擊、文字輸入、頁面滾動與歷程導航多視窗即時同動。
+   - **書籤即時同步至各環境**：自訂書籤一鍵同步寫入所有環境之 Chrome 書籤列，執行中的瀏覽器即時生效無需重啟。
+   - **搜尋、選擇、輸入三合一快速跳轉**：同步導覽列支援即時搜尋書籤、下拉點選與自由鍵入網址，一鍵驅動所有視窗跳轉。
+   - **外網 IP 即時偵測顯示**：執行中的環境即時偵測並展示對外真實出口 IP、國家地區與城市，支援一鍵複製與隨時手動重新整理。
+3. **雙重底層指紋防護（Fingerprint-Chromium + AntyCore）**：
    - **C++ 底層核心**：內建一鍵從 GitHub 自動下載並安裝最新 **[fingerprint-chromium](https://github.com/adryfish/fingerprint-chromium)** 功能，支援 `--fingerprint=<種子>`、`--fingerprint-platform`、`--fingerprint-brand`、`--fingerprint-hardware-concurrency`、`--timezone`、`--lang` 等底層參數。
    - **AntyCore 輔助引擎**：每個環境啟動時自動生成專屬的 `MAIN` world 硬體指紋防護與右下角視窗環境識別標籤（即使尚未下載 Fingerprint-Chromium、使用本機 Google Chrome 也能立即體驗環境隔離、WebGL 顯卡偽裝、Canvas/Audio 雜訊防護與視窗識別）。
 3. **強大的擴充功能自動掛載與更新中心（Extensions Manager）**：
@@ -52,10 +57,10 @@ npm.cmd start
 npm.cmd run dist
 ```
 建置完成後，安裝檔將產生於 `release/` 目錄：
-- `release/ChameleonX Setup 1.0.0.exe`（直接提供給其他使用者安裝即可）
+- `release/ChameleonX Setup 1.0.1.exe`（直接提供給其他使用者安裝即可）
 
 ### 其他使用者安裝流程
-1. 執行 `ChameleonX Setup 1.0.0.exe` 開始安裝（支援自選路徑、自動建立桌面捷徑）。
+1. 執行 `ChameleonX Setup 1.0.1.exe` 開始安裝（支援自選路徑、自動建立桌面捷徑）。
 2. **安裝過程中彈出核心下載選項**：
    - 點選**【是】**：安裝程式自動從官方 GitHub 下載最新版 Fingerprint-Chromium 並配置完成，安裝後直接開箱即用。
    - 點選**【否】**：跳過下載（適用離線安裝），使用者隨時可在開啟軟體後，至「核心設定」手動下載。
