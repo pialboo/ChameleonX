@@ -6,6 +6,7 @@ import {
   Globe,
   CheckCircle2,
   Trash2,
+  RefreshCw,
 } from 'lucide-react';
 import { ExtensionItem } from '../types';
 import { api } from '../api';
@@ -24,7 +25,10 @@ export const ExtensionsPage: React.FC<ExtensionsPageProps> = ({
   const [folderPath, setFolderPath] = useState('');
   const [webstoreInput, setWebstoreInput] = useState('');
   const [loadingAction, setLoadingAction] = useState<string | null>(null);
+  const [updatingId, setUpdatingId] = useState<string | null>(null);
+  const [updatingExt, setUpdatingExt] = useState<ExtensionItem | null>(null);
   const fileInputRef = useRef<HTMLInputElement | null>(null);
+  const updateFileInputRef = useRef<HTMLInputElement | null>(null);
 
   const handleBrowseFolder = async () => {
     if (window.electronAPI?.selectDirectory) {
@@ -107,6 +111,64 @@ export const ExtensionsPage: React.FC<ExtensionsPageProps> = ({
       onRefresh();
     } catch (err: any) {
       showToast(err.message, 'error');
+    }
+  };
+
+  const handleUpdate = async (ext: ExtensionItem) => {
+    const hasWebStore = ext.source === 'webstore' || !!ext.webstoreId || /cws_[a-p]{32}/i.test(ext.path);
+    if (ext.source === 'archive' && !hasWebStore) {
+      setUpdatingExt(ext);
+      updateFileInputRef.current?.click();
+      return;
+    }
+
+    setUpdatingId(ext.id);
+    try {
+      const res = await api.updateExtensionPackage(ext.id);
+      if (res.needFile) {
+        setUpdatingExt(ext);
+        updateFileInputRef.current?.click();
+      } else {
+        showToast(res.message || `已檢查並更新：${ext.name}`, 'success');
+        onRefresh();
+      }
+    } catch (err: any) {
+      showToast(err.message || '更新失敗', 'error');
+    } finally {
+      setUpdatingId(null);
+    }
+  };
+
+  const handleUpdateArchiveFile = async (e: React.ChangeEvent<HTMLInputElement>) => {
+    const file = e.target.files?.[0];
+    const targetExt = updatingExt;
+    e.target.value = '';
+    if (!file || !targetExt) return;
+
+    setUpdatingId(targetExt.id);
+    try {
+      const reader = new FileReader();
+      reader.onload = async () => {
+        try {
+          const base64Data = reader.result as string;
+          const res = await api.updateExtensionPackage(targetExt.id, {
+            fileName: file.name,
+            base64Data,
+          });
+          showToast(res.message || `已成功更新：${targetExt.name}`, 'success');
+          onRefresh();
+        } catch (err: any) {
+          showToast(err.message || '更新失敗', 'error');
+        } finally {
+          setUpdatingId(null);
+          setUpdatingExt(null);
+        }
+      };
+      reader.readAsDataURL(file);
+    } catch (err: any) {
+      showToast(err.message || '讀取檔案失敗', 'error');
+      setUpdatingId(null);
+      setUpdatingExt(null);
     }
   };
 
@@ -255,7 +317,7 @@ export const ExtensionsPage: React.FC<ExtensionsPageProps> = ({
                   </div>
                 </div>
 
-                <div className="flex items-center gap-3 shrink-0">
+                <div className="flex items-center gap-2 shrink-0">
                   <button
                     type="button"
                     onClick={() => handleToggleGlobal(ext)}
@@ -267,6 +329,22 @@ export const ExtensionsPage: React.FC<ExtensionsPageProps> = ({
                   >
                     <CheckCircle2 className="w-3.5 h-3.5" />
                     <span>{ext.enabledForAll ? '全域自動掛載' : '手動指定掛載'}</span>
+                  </button>
+
+                  <button
+                    type="button"
+                    disabled={updatingId === ext.id}
+                    onClick={() => handleUpdate(ext)}
+                    className="p-1.5 rounded-lg text-slate-400 hover:text-sky-400 hover:bg-sky-500/10 transition cursor-pointer disabled:opacity-50"
+                    title={
+                      ext.source === 'webstore' || ext.webstoreId || /cws_[a-p]{32}/i.test(ext.path)
+                        ? '從 Chrome 應用程式商店檢查並下載最新版'
+                        : ext.source === 'folder'
+                        ? '重新載入本地擴充功能資料夾'
+                        : '選取新版 .crx / .zip 檔案更新'
+                    }
+                  >
+                    <RefreshCw className={`w-4 h-4 ${updatingId === ext.id ? 'animate-spin text-sky-400' : ''}`} />
                   </button>
 
                   <button
@@ -289,6 +367,14 @@ export const ExtensionsPage: React.FC<ExtensionsPageProps> = ({
           </div>
         </div>
       </div>
+
+      <input
+        ref={updateFileInputRef}
+        type="file"
+        accept=".crx,.zip"
+        onChange={handleUpdateArchiveFile}
+        className="hidden"
+      />
     </div>
   );
 };

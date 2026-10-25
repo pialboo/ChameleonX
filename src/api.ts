@@ -158,6 +158,23 @@ export const api = {
       body: JSON.stringify(payload),
     }),
 
+  updateExtensionPackage: (
+    id: string,
+    payload?: { filePath?: string; fileName?: string; base64Data?: string }
+  ) =>
+    request<{
+      updated?: boolean;
+      hasNewVersion?: boolean;
+      oldVersion?: string;
+      newVersion?: string;
+      needFile?: boolean;
+      message?: string;
+      ext?: ExtensionItem;
+    }>(`/extensions/${id}/update`, {
+      method: 'POST',
+      body: JSON.stringify(payload || {}),
+    }),
+
   deleteExtension: (id: string) =>
     request(`/extensions/${id}`, {
       method: 'DELETE',

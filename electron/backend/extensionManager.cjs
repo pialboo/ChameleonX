@@ -855,10 +855,164 @@ async function installFromChromeWebStore(inputUrlOrId, extensionsRoot) {
   };
 }
 
+/**
+ * Update an existing extension (from Web Store, local folder, or uploaded archive)
+ */
+async function updateExtension(ext, extensionsRoot, archivePayload = {}) {
+  const oldVersion = ext.version || '1.0.0';
+
+  // 1. If an archive file/payload is explicitly provided
+  if (archivePayload.base64Data || archivePayload.filePath) {
+    let targetFile = archivePayload.filePath;
+    let tempFile = null;
+    if (!targetFile && archivePayload.base64Data) {
+      tempFile = path.join(extensionsRoot, `_update_${Date.now()}_${archivePayload.fileName || 'ext.zip'}`);
+      const cleaned = String(archivePayload.base64Data).replace(/^data:.*?;base64,/, '');
+      fs.writeFileSync(tempFile, Buffer.from(cleaned, 'base64'));
+      targetFile = tempFile;
+    }
+    try {
+      const rawBuf = fs.readFileSync(targetFile);
+      const zipBuf = stripCrxHeader(rawBuf);
+      const zip = new AdmZip(zipBuf);
+
+      const targetDir = ext.path && fs.existsSync(ext.path)
+        ? ext.path
+        : path.join(extensionsRoot, `ext_${ext.id}_${Date.now()}`);
+
+      fs.mkdirSync(targetDir, { recursive: true });
+      zip.extractAllTo(targetDir, true);
+
+      const info = inspectExtensionDir(targetDir);
+      ext.name = info.name;
+      ext.version = info.version;
+      ext.description = info.description;
+      ext.path = info.path;
+      if (info.iconDataUrl) ext.iconDataUrl = info.iconDataUrl;
+
+      const hasNewVersion = oldVersion !== info.version;
+      return {
+        updated: true,
+        hasNewVersion,
+        oldVersion,
+        newVersion: info.version,
+        message: hasNewVersion
+          ? `已成功將【${ext.name}】更新至 v${info.version}`
+          : `已重新安裝【${ext.name}】(v${info.version})`,
+        ext,
+      };
+    } finally {
+      if (tempFile && fs.existsSync(tempFile)) {
+        try { fs.unlinkSync(tempFile); } catch (e) {}
+      }
+    }
+  }
+
+  // 2. Web Store source or has webstoreId or folder name matches cws_<id>
+  let webstoreId = ext.webstoreId;
+  if (!webstoreId && ext.source === 'webstore') {
+    const match = String(ext.id).match(/ext-cws-([a-p0-9]+)/i);
+    if (match) webstoreId = match[1];
+  }
+  if (!webstoreId && ext.path) {
+    const folderMatch = path.basename(ext.path).match(/cws_([a-p]{32})/i);
+    if (folderMatch) webstoreId = folderMatch[1];
+  }
+
+  if (webstoreId || ext.source === 'webstore') {
+    if (!webstoreId || !/^[a-p]{32}$/i.test(webstoreId)) {
+      throw new Error('此擴充功能缺少有效之 32 位元 Chrome 商店 ID，無法線上檢查更新');
+    }
+    const crxUrl = `https://clients2.google.com/service/update2/crx?response=redirect&prodversion=130.0.6723.117&acceptformat=crx2,crx3&x=id%3D${webstoreId}%26uc`;
+    const response = await fetch(crxUrl);
+    if (!response.ok) {
+      throw new Error(`無法從 Chrome 商店下載更新 (HTTP ${response.status})`);
+    }
+    const arrayBuf = await response.arrayBuffer();
+    const rawBuf = Buffer.from(arrayBuf);
+    if (rawBuf.length < 100) {
+      throw new Error('下載的更新檔無效或已不支援下載');
+    }
+    const zipBuf = stripCrxHeader(rawBuf);
+    const zip = new AdmZip(zipBuf);
+
+    // Extract to a temp directory first to safely inspect the new version
+    const tempExtractDir = path.join(extensionsRoot, `_cws_temp_${webstoreId}_${Date.now()}`);
+    try {
+      fs.mkdirSync(tempExtractDir, { recursive: true });
+      zip.extractAllTo(tempExtractDir, true);
+      const newInfo = inspectExtensionDir(tempExtractDir);
+
+      const targetDir = ext.path || path.join(extensionsRoot, `cws_${webstoreId}`);
+      if (fs.existsSync(targetDir)) {
+        fs.rmSync(targetDir, { recursive: true, force: true });
+      }
+      fs.mkdirSync(targetDir, { recursive: true });
+      zip.extractAllTo(targetDir, true);
+
+      const finalInfo = inspectExtensionDir(targetDir);
+      ext.name = finalInfo.name;
+      ext.version = finalInfo.version;
+      ext.description = finalInfo.description;
+      ext.path = finalInfo.path;
+      if (finalInfo.iconDataUrl) ext.iconDataUrl = finalInfo.iconDataUrl;
+      ext.webstoreId = webstoreId;
+
+      const hasNewVersion = oldVersion !== finalInfo.version;
+      return {
+        updated: true,
+        hasNewVersion,
+        oldVersion,
+        newVersion: finalInfo.version,
+        message: hasNewVersion
+          ? `已成功將【${ext.name}】由 v${oldVersion} 更新至最新版 v${finalInfo.version}！`
+          : `【${ext.name}】已是最新版本 (v${finalInfo.version})`,
+        ext,
+      };
+    } finally {
+      if (fs.existsSync(tempExtractDir)) {
+        try { fs.rmSync(tempExtractDir, { recursive: true, force: true }); } catch (e) {}
+      }
+    }
+  }
+
+  // 3. Local Folder source
+  if (ext.source === 'folder') {
+    if (!ext.path || !fs.existsSync(ext.path)) {
+      throw new Error(`找不到本機擴充資料夾：${ext.path || '(路徑為空)'}`);
+    }
+    const info = inspectExtensionDir(ext.path);
+    ext.name = info.name;
+    ext.version = info.version;
+    ext.description = info.description;
+    ext.path = info.path;
+    if (info.iconDataUrl) ext.iconDataUrl = info.iconDataUrl;
+
+    const hasNewVersion = oldVersion !== info.version;
+    return {
+      updated: true,
+      hasNewVersion,
+      oldVersion,
+      newVersion: info.version,
+      message: hasNewVersion
+        ? `本機擴充功能【${ext.name}】已更新為 v${info.version}`
+        : `已重新讀取【${ext.name}】(v${info.version})，設定已同步`,
+      ext,
+    };
+  }
+
+  // 4. Archive source with no file provided
+  return {
+    needFile: true,
+    message: '此為本機上傳之壓縮檔，請選取新版 .crx 或 .zip 進行更新',
+  };
+}
+
 module.exports = {
   inspectExtensionDir,
   ensureStarterExtensions,
   buildProfileCoreExtension,
   importExtensionArchive,
   installFromChromeWebStore,
+  updateExtension,
 };

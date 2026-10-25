@@ -2,6 +2,8 @@
 
 這是一套專為多帳號隔離、電商矩陣、社群營運與手動防關聯打造的**全繁體中文獨立桌面軟體（Electron）**，具備變色龍般靈活的多維指紋擬態與無限制環境管理能力。
 
+> 📥 **Windows 安裝程式直接下載**：[點此前往 GitHub Releases 下載最新版安裝檔 (`ChameleonX Setup 1.0.0.exe`)](https://github.com/pialboo/ChameleonX/releases/latest)
+
 ## ✨ 核心特色
 
 1. **無數量與功能限制**：
@@ -9,10 +11,10 @@
 2. **雙重底層指紋防護（Fingerprint-Chromium + AntyCore）**：
    - **C++ 底層核心**：內建一鍵從 GitHub 自動下載並安裝最新 **[fingerprint-chromium](https://github.com/adryfish/fingerprint-chromium)** 功能，支援 `--fingerprint=<種子>`、`--fingerprint-platform`、`--fingerprint-brand`、`--fingerprint-hardware-concurrency`、`--timezone`、`--lang` 等底層參數。
    - **AntyCore 輔助引擎**：每個環境啟動時自動生成專屬的 `MAIN` world 硬體指紋防護與右下角視窗環境識別標籤（即使尚未下載 Fingerprint-Chromium、使用本機 Google Chrome 也能立即體驗環境隔離、WebGL 顯卡偽裝、Canvas/Audio 雜訊防護與視窗識別）。
-3. **強大的擴充功能自動掛載中心（Extensions Manager）**：
-   - **方式一（本地資料夾）**：直接選擇任何已解壓縮、包含 `manifest.json` 的擴充功能目錄。
-   - **方式二（匯入 `.crx` / `.zip`）**：自動剝離 CRX2/CRX3 標頭並解壓縮至本地擴充功能庫。
-   - **方式三（Chrome 線上商店一鍵安裝）**：貼上商店網址或 32 位元 ID，直接從 Google 官方下載並安裝。
+3. **強大的擴充功能自動掛載與更新中心（Extensions Manager）**：
+   - **方式一（本地資料夾）**：直接選擇任何已解壓縮、包含 `manifest.json` 的擴充功能目錄，支援一鍵重新讀取更新。
+   - **方式二（匯入 `.crx` / `.zip`）**：自動剝離 CRX2/CRX3 標頭並解壓縮至本地擴充功能庫，支援選取新版檔案覆蓋更新。
+   - **方式三（Chrome 線上商店一鍵安裝）**：貼上商店網址或 32 位元 ID，直接從 Google 官方下載，支援在刪除按鈕旁一鍵線上檢查更新。
    - 支援設為 **「全域預設掛載」**（所有環境啟動時自動透過 `--load-extension` 載入）或透過批量操作掛載至特定環境。
 4. **完整的批量操作中心（Bulk Actions）**：
    - **批量建立環境 (Mass Create)**：一次建立多達 200 個獨立指紋環境，自動依序或隨機分配代理池。

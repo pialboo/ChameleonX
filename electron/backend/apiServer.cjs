@@ -10,6 +10,7 @@ const {
   inspectExtensionDir,
   importExtensionArchive,
   installFromChromeWebStore,
+  updateExtension,
 } = require('./extensionManager.cjs');
 const {
   detectKernels,
@@ -783,6 +784,20 @@ function createApiServer(electronDialogHandler = null) {
       state.extensions.unshift(newExt);
       store.save();
       res.json(newExt);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/extensions/:id/update', async (req, res) => {
+    try {
+      const state = store.getState();
+      const ext = state.extensions.find((e) => e.id === req.params.id);
+      if (!ext) return res.status(404).json({ error: '找不到該擴充功能' });
+      const { filePath, fileName, base64Data } = req.body || {};
+      const result = await updateExtension(ext, EXTENSIONS_DIR, { filePath, fileName, base64Data });
+      store.save();
+      res.json(result);
     } catch (err) {
       res.status(400).json({ error: err.message });
     }
