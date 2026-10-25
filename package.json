@@ -3,18 +3,30 @@
   "version": "1.0.2",
   "description": "變色龍指紋瀏覽器 (ChameleonX) — 全繁體中文防關聯桌面系統 (支援無限制環境、批量操作、擴充功能自動掛載、Fingerprint-Chromium 核心)",
   "main": "electron/main.cjs",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/pialboo/ChameleonX.git"
+  },
   "scripts": {
     "dev:vite": "vite --port 5173",
     "dev:electron": "electron .",
     "dev": "node scripts/dev.cjs",
     "build": "vite build",
     "start": "electron .",
-    "dist": "npm.cmd run build && electron-builder"
+    "dist": "npm run build && electron-builder"
   },
   "build": {
     "appId": "com.chameleonx.app",
     "productName": "ChameleonX",
     "compression": "maximum",
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "pialboo",
+        "repo": "ChameleonX",
+        "releaseType": "release"
+      }
+    ],
     "directories": {
       "output": "release"
     },
