@@ -6,4 +6,5 @@ contextBridge.exposeInMainWorld('electronAPI', {
   selectFile: (filters) => ipcRenderer.invoke('dialog:selectFile', filters),
   saveFile: (options) => ipcRenderer.invoke('dialog:saveFile', options),
   windowControl: (action) => ipcRenderer.invoke('window:control', action),
+  openExternal: (url) => ipcRenderer.invoke('app:openExternal', url),
 });

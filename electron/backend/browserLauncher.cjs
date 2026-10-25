@@ -479,15 +479,15 @@ async function launchProfile(profileId, windowBounds = null) {
   let effectiveProxy = null;
   if (profile.proxyMode === 'saved') {
     if (!profile.proxyId) {
-      throw new Error(環境「」已設定使用已存代理，但尚未指派代理。為防止真實 IP 洩漏，已阻止啟動！);
+      throw new Error(`環境「${profile.name || ""}` + `」已設定使用已存代理，但尚未指派代理。為防止真實 IP 洩漏，已阻止啟動！`);
     }
     effectiveProxy = (state.proxies || []).find((px) => px.id === profile.proxyId) || null;
     if (!effectiveProxy) {
-      throw new Error(環境「」綁定的代理已不存在（可能已被刪除）。為防止真實本機 IP 洩漏，已阻止啟動！請重新指派代理。);
+      throw new Error(`環境「${profile.name || ""}` + `」綁定的代理已不存在（可能已被刪除）。為防止真實本機 IP 洩漏，已阻止啟動！請重新指派代理。`);
     }
   } else if (profile.proxyMode === 'custom') {
     if (!profile.proxy || !profile.proxy.host || !profile.proxy.port) {
-      throw new Error(環境「」自訂代理設定不完整（缺少主機或端口）。為防止真實 IP 洩漏，已阻止啟動！);
+      throw new Error(`環境「${profile.name || ""}` + `」自訂代理設定不完整（缺少主機或端口）。為防止真實 IP 洩漏，已阻止啟動！`);
     }
     effectiveProxy = profile.proxy;
   }

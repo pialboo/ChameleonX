@@ -293,6 +293,7 @@ declare global {
       selectFile: (filters?: any[]) => Promise<string | null>;
       saveFile: (options?: any) => Promise<string | null>;
       windowControl: (action: 'minimize' | 'maximize' | 'close') => Promise<void>;
+      openExternal: (url: string) => Promise<void>;
     };
   }
 }

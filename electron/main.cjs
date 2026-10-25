@@ -1,4 +1,4 @@
-const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage } = require('electron');
+const { app, BrowserWindow, ipcMain, dialog, Tray, Menu, nativeImage, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { createApiServer } = require('./backend/apiServer.cjs');
@@ -188,6 +188,14 @@ function createWindow() {
     },
   });
 
+  // 外部連結一律使用預設系統瀏覽器開啟，避免在 Electron 視窗內跳轉
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url && (url.startsWith('https:') || url.startsWith('http:'))) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
+  });
+
   // 當使用者點擊右上角 X 關閉時，隱藏縮小至系統常駐匣，確保後台環境與代理不被中斷
   mainWindow.on('close', (event) => {
     if (!isQuitting) {
@@ -243,6 +251,12 @@ ipcMain.handle('window:control', (_event, action) => {
     }
   } else if (action === 'hide') {
     mainWindow.hide();
+  }
+});
+
+ipcMain.handle('app:openExternal', (_event, url) => {
+  if (url && (url.startsWith('https://') || url.startsWith('http://'))) {
+    shell.openExternal(url);
   }
 });
 

@@ -10,6 +10,8 @@ import {
   Sparkles,
   DownloadCloud,
   Archive,
+  Github,
+  ExternalLink,
 } from 'lucide-react';
 import { KernelInfo } from '../types';
 import { ChameleonLogo } from './ChameleonLogo';
@@ -169,6 +171,41 @@ export const Sidebar: React.FC<SidebarProps> = ({
           </button>
         </div>
       ) : null}
+
+      {/* GitHub Releases & Quick Update Link */}
+      <div className="p-2.5 border-t border-[#262f3c] bg-[#0d1117]/80">
+        <a
+          href="https://github.com/pialboo/ChameleonX/releases"
+          target="_blank"
+          rel="noopener noreferrer"
+          onClick={(e) => {
+            e.preventDefault();
+            const url = 'https://github.com/pialboo/ChameleonX/releases';
+            if (window.electronAPI?.openExternal) {
+              window.electronAPI.openExternal(url);
+            } else {
+              window.open(url, '_blank', 'noopener,noreferrer');
+            }
+          }}
+          className="w-full flex items-center justify-between px-3 py-2 rounded-xl bg-[#161b22] hover:bg-[#1f242c] border border-[#30363d] text-slate-300 hover:text-white transition group cursor-pointer shadow-sm"
+          title="前往 GitHub 查看最新版本與下載安裝更新"
+        >
+          <div className="flex items-center gap-2.5 min-w-0">
+            <div className="w-6 h-6 rounded-lg bg-white/5 border border-white/10 flex items-center justify-center shrink-0 group-hover:border-sky-500/40 transition">
+              <Github className="w-3.5 h-3.5 text-slate-300 group-hover:text-white transition" />
+            </div>
+            <div className="flex flex-col text-left truncate">
+              <span className="text-[11px] font-bold text-slate-200 group-hover:text-sky-300 transition leading-tight">
+                版本與快速更新
+              </span>
+              <span className="text-[9px] text-slate-500 leading-tight">
+                GitHub Releases
+              </span>
+            </div>
+          </div>
+          <ExternalLink className="w-3.5 h-3.5 text-slate-500 group-hover:text-sky-400 transition shrink-0" />
+        </a>
+      </div>
     </aside>
   );
 };
