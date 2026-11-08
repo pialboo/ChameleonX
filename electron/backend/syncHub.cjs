@@ -16,6 +16,7 @@ const cdpProfileSessions = new Map();
 
 // Also keep fallback WS clients in case extension connects
 const connectedWsClients = new Map();
+const fpScriptCache = new Map();
 
 let syncState = {
   enabled: false,
@@ -389,20 +390,23 @@ async function ensureAllCdpConnections() {
         }
       }
 
-      // Read profile's fingerprint script if present on disk
-      let fpScript = '';
-      try {
-        const fpPath = path.join(PROFILES_DIR, profileId, '_anty_core_ext', 'inject_main.js');
-        if (fs.existsSync(fpPath)) {
-          fpScript = fs.readFileSync(fpPath, 'utf8');
-        }
-      } catch (e) {}
+      // Read profile's fingerprint script (with in-memory cache)
+      let fpScript = fpScriptCache.get(profileId) || '';
+      if (!fpScript) {
+        try {
+          const fpPath = path.join(PROFILES_DIR, profileId, '_anty_core_ext', 'inject_main.js');
+          if (fs.existsSync(fpPath)) {
+            fpScript = fs.readFileSync(fpPath, 'utf8');
+            fpScriptCache.set(profileId, fpScript);
+          }
+        } catch (e) {}
+      }
 
       for (const target of pageTargets) {
         if (session.pages.has(target.id)) {
           const existingPage = session.pages.get(target.id);
           existingPage.url = target.url;
-          if (existingPage.ws && existingPage.ws.readyState === 1) {
+          if (existingPage.ws && (existingPage.ws.readyState === WebSocket.OPEN || existingPage.ws.readyState === WebSocket.CONNECTING)) {
             continue;
           }
         }
@@ -467,8 +471,15 @@ async function ensureAllCdpConnections() {
 }
 
 // Keep CDP synchronizer connections alive automatically
+let pollCounter = 0;
 setInterval(() => {
-  ensureAllCdpConnections().catch(() => {});
+  pollCounter++;
+  const runningMap = getRunningProfilesMap();
+  if (runningMap.size === 0) return;
+  // If sync is enabled, poll every 1s; if disabled, poll relaxed every 10s
+  if (syncState.enabled || pollCounter % 10 === 0) {
+    ensureAllCdpConnections().catch(() => {});
+  }
 }, 1000);
 
 function attachSyncWebSocketServer(httpServer) {
@@ -610,6 +621,7 @@ async function broadcastSyncCommand(payload, specificProfileIds = null) {
  * Distribute different lines of text 1-to-1 across running synced windows via CDP
  */
 async function distributeDiffText(lines = [], specificProfileIds = null) {
+  if (!lines || lines.length === 0) return { sentCount: 0, targetCount: 0 };
   await ensureAllCdpConnections();
 
   const runningMap = getRunningProfilesMap();

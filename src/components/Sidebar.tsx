@@ -5,6 +5,7 @@ import {
   Puzzle,
   Bookmark,
   Tags,
+  FolderKanban,
   Settings,
   Play,
   Sparkles,
@@ -71,8 +72,8 @@ export const Sidebar: React.FC<SidebarProps> = ({
     },
     {
       id: 'tags',
-      label: '狀態與標籤',
-      icon: <Tags className="w-4 h-4" />,
+      label: '分類與狀態',
+      icon: <FolderKanban className="w-4 h-4" />,
     },
     {
       id: 'settings',

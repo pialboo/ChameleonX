@@ -396,7 +396,8 @@ function createApiServer(electronDialogHandler = null) {
     await stopProfile(id);
     state.profiles = state.profiles.filter((p) => p.id !== id);
     store.save();
-    const dir = path.join(PROFILES_DIR, id);
+    const safeId = path.basename(id);
+    const dir = path.join(PROFILES_DIR, safeId);
     if (fs.existsSync(dir)) {
       try {
         fs.rmSync(dir, { recursive: true, force: true });
@@ -427,7 +428,8 @@ function createApiServer(electronDialogHandler = null) {
 
   // Clear profile cache
   app.post('/api/profiles/:id/clear-cache', (req, res) => {
-    const defaultDir = path.join(PROFILES_DIR, req.params.id, 'Default');
+    const safeId = path.basename(req.params.id);
+    const defaultDir = path.join(PROFILES_DIR, safeId, 'Default');
     const cacheDirs = ['Cache', 'Code Cache', 'GPUCache', 'DawnCache'];
     let cleared = 0;
     for (const sub of cacheDirs) {
@@ -444,7 +446,8 @@ function createApiServer(electronDialogHandler = null) {
 
   // Open profile directory in Windows Explorer
   app.post('/api/profiles/:id/open-folder', (req, res) => {
-    const dir = path.join(PROFILES_DIR, req.params.id);
+    const safeId = path.basename(req.params.id);
+    const dir = path.join(PROFILES_DIR, safeId);
     fs.mkdirSync(dir, { recursive: true });
     execFile('explorer.exe', [dir]);
     res.json({ ok: true, path: dir });
@@ -491,7 +494,8 @@ function createApiServer(electronDialogHandler = null) {
         state.profiles = state.profiles.filter((p) => !idSet.has(p.id));
         store.save();
         for (const id of profileIds) {
-          const dir = path.join(PROFILES_DIR, id);
+          const safeId = path.basename(id);
+    const dir = path.join(PROFILES_DIR, safeId);
           if (fs.existsSync(dir)) {
             try {
               fs.rmSync(dir, { recursive: true, force: true });
@@ -745,17 +749,24 @@ function createApiServer(electronDialogHandler = null) {
       : state.proxies;
 
     const results = [];
-    for (const px of targets) {
-      const r = await testProxyConnection(px);
-      px.status = r.ok ? 'online' : 'offline';
-      px.latency = r.latency;
-      if (r.ok) {
-        px.lastIp = r.ip;
-        px.country = r.country;
-        px.city = r.city;
-        px.timezone = r.timezone;
-      }
-      results.push({ id: px.id, ...r });
+    const concurrency = 5;
+    for (let i = 0; i < targets.length; i += concurrency) {
+      const chunk = targets.slice(i, i + concurrency);
+      const chunkResults = await Promise.all(
+        chunk.map(async (px) => {
+          const r = await testProxyConnection(px);
+          px.status = r.ok ? 'online' : 'offline';
+          px.latency = r.latency;
+          if (r.ok) {
+            px.lastIp = r.ip;
+            px.country = r.country;
+            px.city = r.city;
+            px.timezone = r.timezone;
+          }
+          return { id: px.id, ...r };
+        })
+      );
+      results.push(...chunkResults);
     }
     store.save();
     res.json({ results });
@@ -957,8 +968,23 @@ function createApiServer(electronDialogHandler = null) {
       id: 'bm-' + crypto.randomBytes(3).toString('hex'),
       title: req.body?.title || '常用網站',
       url: req.body?.url || 'https://',
+      folder: (req.body?.folder || '').trim(),
     };
     state.bookmarks.push(bm);
+    store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
+    res.json(bm);
+  });
+
+  app.put('/api/bookmarks/:id', (req, res) => {
+    const state = store.getState();
+    const bm = (state.bookmarks || []).find((b) => b.id === req.params.id);
+    if (!bm) return res.status(404).json({ error: '找不到該書籤' });
+    if (req.body?.title !== undefined) bm.title = req.body.title.trim();
+    if (req.body?.url !== undefined) bm.url = req.body.url.trim();
+    if (req.body?.folder !== undefined) bm.folder = (req.body.folder || '').trim();
     store.save();
     try {
       syncAllProfilesBookmarks();

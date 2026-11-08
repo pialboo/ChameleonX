@@ -34,7 +34,7 @@ export interface FingerprintConfig {
 export interface ProxyItem {
   id: string;
   name: string;
-  type: 'http' | 'https' | 'socks5' | 'socks4';
+  type: 'http' | 'https' | 'socks5' | 'socks4' | 'ssh';
   host: string;
   port: string;
   username?: string;
@@ -79,6 +79,7 @@ export interface BookmarkItem {
   id: string;
   title: string;
   url: string;
+  folder?: string;
 }
 
 export interface ProfileItem {
@@ -167,6 +168,7 @@ export interface SyncState {
   syncInput: boolean;
   syncScroll: boolean;
   targetProfileIds: string[];
+  connectedProfiles?: string[];
   connectedProfileIds: string[];
 }
 

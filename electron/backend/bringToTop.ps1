@@ -87,18 +87,7 @@ try {
 } catch {}
 
 if ($Pids -and $Pids.Count -gt 0) {
-    # Include both target PIDs and child processes if any
-    $expanded = [System.Collections.ArrayList]::new()
-    foreach ($p in $Pids) {
-        [void]$expanded.Add([int]$p)
-        try {
-            $kids = Get-CimInstance Win32_Process -Filter "ParentProcessId = $p" -ErrorAction SilentlyContinue
-            foreach ($k in $kids) {
-                [void]$expanded.Add([int]$k.ProcessId)
-            }
-        } catch {}
-    }
-    $intArr = [int[]]$expanded.ToArray([int])
-    $res = [Win32WindowMgr]::BringPidsToFront($intArr, [bool]$KeepTopmost.IsPresent)
-    Write-Host "Brought $res windows to front for $($intArr.Length) processes"
+    # Pass target browser PIDs directly to Win32 BringPidsToFront for instant execution
+    $res = [Win32WindowMgr]::BringPidsToFront($Pids, [bool]$KeepTopmost.IsPresent)
+    Write-Host "Brought $res windows to front for $($Pids.Length) processes"
 }

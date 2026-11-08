@@ -199,8 +199,11 @@ export const api = {
   deleteTag: (name: string) =>
     request(`/tags/${encodeURIComponent(name)}`, { method: 'DELETE' }),
 
-  createBookmark: (title: string, url: string) =>
-    request('/bookmarks', { method: 'POST', body: JSON.stringify({ title, url }) }),
+  createBookmark: (title: string, url: string, folder?: string) =>
+    request('/bookmarks', { method: 'POST', body: JSON.stringify({ title, url, folder }) }),
+
+  updateBookmark: (id: string, updates: { title?: string; url?: string; folder?: string }) =>
+    request(`/bookmarks/${id}`, { method: 'PUT', body: JSON.stringify(updates) }),
 
   deleteBookmark: (id: string) =>
     request(`/bookmarks/${id}`, { method: 'DELETE' }),

@@ -229,6 +229,7 @@ export const ProxiesPage: React.FC<ProxiesPageProps> = ({
 
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return;
+    if (!window.confirm(`確定要刪除所選取的 ${selectedIds.length} 組代理嗎？`)) return;
     await api.bulkDeleteProxies(selectedIds);
     showToast(`已刪除 ${selectedIds.length} 組代理`);
     setSelectedIds([]);
@@ -392,6 +393,7 @@ export const ProxiesPage: React.FC<ProxiesPageProps> = ({
                       </button>
                       <button
                         onClick={async () => {
+                          if (!window.confirm(`確定要刪除代理「${px.name}」嗎？`)) return;
                           await api.deleteProxy(px.id);
                           onRefresh();
                         }}

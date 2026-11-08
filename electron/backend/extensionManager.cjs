@@ -129,7 +129,7 @@ function ensureStarterExtensions(extensionsRoot) {
     {
       id: 'ext-builtin-inspector',
       folder: 'anty-fingerprint-inspector',
-      name: 'Anty 指紋與環境自檢助手',
+      name: '變色龍指紋自檢助手',
       version: '1.2.0',
       description: '在瀏覽器右上角點擊即可檢視當前環境的指紋種子、WebGL 顯卡、User-Agent、時區與防關聯狀態。',
       enabledForAll: true,
@@ -148,7 +148,7 @@ function ensureStarterExtensions(extensionsRoot) {
 </style>
 </head>
 <body>
-  <h3><span>🛡️ Anty 指紋防護狀態</span><span class="badge">保護中</span></h3>
+  <h3><span>🦎 變色龍指紋防護狀態</span><span class="badge">保護中</span></h3>
   <div id="info">載入中...</div>
   <script src="popup.js"></script>
 </body>
@@ -175,7 +175,7 @@ infoEl.innerHTML = [
     {
       id: 'ext-builtin-quickfill',
       folder: 'anty-quick-notes',
-      name: 'Anty 帳號備忘與快速填表助手',
+      name: '變色龍帳號備忘助手',
       version: '1.1.0',
       description: '提供當前獨立環境專屬的帳號密碼、助記詞或常用文字快速暫存與一鍵複製面板，資料完全隨該環境隔離保存。',
       enabledForAll: true,
@@ -219,7 +219,7 @@ document.getElementById('saveBtn').addEventListener('click', () => {
     {
       id: 'ext-builtin-cookie-export',
       folder: 'anty-page-cleaner',
-      name: 'Anty 網頁快取與 Storage 清理工具',
+      name: '變色龍網頁快取清理工具',
       version: '1.0.5',
       description: '一鍵檢視並清除當前網站的 LocalStorage、SessionStorage 與頁面快取資料，方便單一環境內快速重置網站狀態。',
       enabledForAll: false,
@@ -236,7 +236,7 @@ document.getElementById('saveBtn').addEventListener('click', () => {
 </style>
 </head>
 <body>
-  <h3>🧹 Anty 站點資料工具</h3>
+  <h3>🧹 變色龍站點資料工具</h3>
   <p>此擴充功能可協助您在多開環境中快速檢視或清理當前網站的儲存空間。</p>
   <button id="btn">點此檢查當前頁面狀態</button>
   <div id="out" style="margin-top:8px;color:#34d399;font-size:11px;"></div>
@@ -299,9 +299,9 @@ function buildProfileCoreExtension(profileDir, profile, settings = {}) {
 
   const manifest = {
     manifest_version: 3,
-    name: `AntyCore - ${profile.name}`,
+    name: `ChameleonCore - ${profile.name}`,
     version: '2.1.0',
-    description: 'Dolphin Anty 環境指紋防護與多視窗同步核心',
+    description: 'ChameleonX 環境指紋防護與多視窗同步核心',
     permissions: ['tabs', 'bookmarks'],
     host_permissions: ['http://127.0.0.1/*'],
     background: {
@@ -513,7 +513,14 @@ function connectWs() {
     ws.onmessage = async (event) => {
       try {
         const msg = JSON.parse(event.data);
-        if (msg.type === 'SYNC_BOOKMARKS' && Array.isArray(msg.bookmarks)) {
+        if (msg.type === 'SYNC_STATE_UPDATE') {
+          const enabled = Boolean(msg.enabled);
+          chrome.tabs.query({}, (tabs) => {
+            tabs.forEach((t) => {
+              if (t.id) chrome.tabs.sendMessage(t.id, { type: 'SET_SYNC_ACTIVE', enabled }).catch(() => {});
+            });
+          });
+        } else if (msg.type === 'SYNC_BOOKMARKS' && Array.isArray(msg.bookmarks)) {
           syncBookmarksToChrome(msg.bookmarks);
         } else if (msg.type === 'SYNC_COMMAND' && msg.payload) {
           const p = msg.payload;
@@ -587,7 +594,20 @@ function syncBookmarksToChrome(bms) {
         });
 
         Promise.all(removePromises).then(() => {
+          const folderMap = {};
+          const rootItems = [];
           (bms || []).forEach((bm) => {
+            const fName = (bm && bm.folder ? String(bm.folder) : '').trim();
+            if (fName) {
+              if (!folderMap[fName]) folderMap[fName] = [];
+              folderMap[fName].push(bm);
+            } else {
+              rootItems.push(bm);
+            }
+          });
+
+          // 1. Create root bookmarks
+          rootItems.forEach((bm) => {
             if (bm && bm.url) {
               chrome.bookmarks.create({
                 parentId: bar.id,
@@ -595,6 +615,26 @@ function syncBookmarksToChrome(bms) {
                 url: bm.url
               });
             }
+          });
+
+          // 2. Create folders and their children
+          Object.keys(folderMap).forEach((fName) => {
+            chrome.bookmarks.create({
+              parentId: bar.id,
+              title: fName
+            }, (folderNode) => {
+              if (folderNode && folderNode.id) {
+                folderMap[fName].forEach((bm) => {
+                  if (bm && bm.url) {
+                    chrome.bookmarks.create({
+                      parentId: folderNode.id,
+                      title: bm.title || bm.name || '書籤',
+                      url: bm.url
+                    });
+                  }
+                });
+              }
+            });
           });
         });
       });
@@ -606,6 +646,14 @@ function syncBookmarksToChrome(bms) {
   const syncContentJs = `(function() {
   if (window.self !== window.top) return;
   let isReplaying = false;
+  window.__antySyncActive = false;
+  try {
+    chrome.runtime.onMessage.addListener((m) => {
+      if (m && m.type === 'SET_SYNC_ACTIVE') {
+        window.__antySyncActive = Boolean(m.enabled);
+      }
+    });
+  } catch (e) {}
   let lastScrollSent = 0;
 
   function getCssSelector(el) {
@@ -653,7 +701,7 @@ function syncBookmarksToChrome(bms) {
   }
 
   function sendSyncEvent(payload) {
-    if (isReplaying || !document.hasFocus()) return;
+    if (isReplaying || !document.hasFocus() || !window.__antySyncActive) return;
     try {
       chrome.runtime.sendMessage({ type: 'USER_SYNC_EVENT', payload });
     } catch (e) {}

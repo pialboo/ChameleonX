@@ -89,7 +89,6 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
   const [activeFolderId, setActiveFolderId] = useState('fld-all');
   const [searchQuery, setSearchQuery] = useState('');
   const [filterStatusId, setFilterStatusId] = useState('');
-  const [filterTag, setFilterTag] = useState('');
   const [filterRunningOnly, setFilterRunningOnly] = useState(false);
 
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
@@ -135,7 +134,10 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
     const q = syncUrlInput.trim().toLowerCase();
     if (!q) return bookmarks;
     return bookmarks.filter(
-      (bm) => bm.title.toLowerCase().includes(q) || bm.url.toLowerCase().includes(q)
+      (bm) =>
+        bm.title.toLowerCase().includes(q) ||
+        bm.url.toLowerCase().includes(q) ||
+        (bm.folder || '').toLowerCase().includes(q)
     );
   }, [bookmarks, syncUrlInput]);
 
@@ -180,6 +182,12 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
   const [diffTextModalOpen, setDiffTextModalOpen] = useState(false);
   const [diffTextContent, setDiffTextContent] = useState('');
   const [sortRunningFirst, setSortRunningFirst] = useState(false);
+
+  // Pagination & Precomputed Lookups for 60fps performance
+  const [pageSize, setPageSize] = useState<number>(50);
+  const [currentPage, setCurrentPage] = useState<number>(1);
+  const statusMap = useMemo(() => new Map(statuses.map((s) => [s.id, s])), [statuses]);
+  const proxyMap = useMemo(() => new Map(proxies.map((px) => [px.id, px])), [proxies]);
 
   const isSyncEnabled = Boolean(syncState?.enabled);
   const runningCount = Object.keys(runningMap).length;
@@ -396,16 +404,13 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
     const list = profiles.filter((p) => {
       if (activeFolderId !== 'fld-all' && p.folderId !== activeFolderId) return false;
       if (filterStatusId && p.statusId !== filterStatusId) return false;
-      if (filterTag && !(p.tags || []).includes(filterTag)) return false;
       if (filterRunningOnly && !runningMap[p.id]?.running) return false;
       if (filterDuplicateIpOnly && !duplicateRunningProfileIds.has(p.id) && !duplicateAllProfileIds.has(p.id)) return false;
       if (searchQuery.trim()) {
         const q = searchQuery.toLowerCase();
         const matchName = p.name.toLowerCase().includes(q);
         const matchNote = (p.notes || '').toLowerCase().includes(q);
-        const matchSeed = (p.fingerprint?.seed || '').includes(q);
-        const matchTag = (p.tags || []).some((t) => t.toLowerCase().includes(q));
-        if (!matchName && !matchNote && !matchSeed && !matchTag) return false;
+        if (!matchName && !matchNote) return false;
       }
       return true;
     });
@@ -424,7 +429,6 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
     profiles,
     activeFolderId,
     filterStatusId,
-    filterTag,
     filterRunningOnly,
     filterDuplicateIpOnly,
     duplicateRunningProfileIds,
@@ -434,6 +438,18 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
     sortRunningFirst,
     selectedIds,
   ]);
+
+  useEffect(() => {
+    setCurrentPage(1);
+  }, [searchQuery, filterStatusId, filterRunningOnly, activeFolderId, filterDuplicateIpOnly]);
+
+  const totalPages = pageSize === -1 ? 1 : Math.max(1, Math.ceil(filteredProfiles.length / pageSize));
+  const safeCurrentPage = Math.min(currentPage, totalPages);
+  const paginatedProfiles = useMemo(() => {
+    if (pageSize === -1) return filteredProfiles;
+    const start = (safeCurrentPage - 1) * pageSize;
+    return filteredProfiles.slice(start, start + pageSize);
+  }, [filteredProfiles, safeCurrentPage, pageSize]);
 
   const toggleSelect = (id: string) => {
     setSelectedIds((prev) => (prev.includes(id) ? prev.filter((x) => x !== id) : [...prev, id]));
@@ -557,6 +573,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
 
   const handleBulkDelete = async () => {
     if (selectedIds.length === 0) return;
+    if (!window.confirm(`確定要刪除所選取的 ${selectedIds.length} 個環境嗎？此操作將永久清除環境資料與設定！`)) return;
     await api.bulkAction('delete', selectedIds);
     showToast(`已刪除 ${selectedIds.length} 個環境`);
     setSelectedIds([]);
@@ -757,8 +774,13 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                               >
                                 <div className="min-w-0 flex-1 pr-2">
                                   <div className="font-bold flex items-center gap-1.5 truncate">
-                                    <span>🔖</span>
+                                    <span>{bm.folder ? '📁' : '🔖'}</span>
                                     <span>{bm.title}</span>
+                                    {bm.folder && (
+                                      <span className="text-[10px] text-sky-400 font-normal px-1.5 py-0.2 rounded bg-sky-950/60 border border-sky-600/40">
+                                        {bm.folder}
+                                      </span>
+                                    )}
                                   </div>
                                   <div className="text-[10px] font-mono text-slate-400 truncate mt-0.5">
                                     {bm.url}
@@ -956,7 +978,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                   type="text"
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  placeholder="搜尋名稱、備註、標籤或 Seed..."
+                  placeholder="搜尋名稱或備註..."
                   className="w-full bg-[#0c0e12] border border-[#262f3c] rounded-lg pl-8 pr-3 py-1.5 text-xs text-white outline-none focus:border-sky-500"
                 />
               </div>
@@ -974,18 +996,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                 ))}
               </select>
 
-              <select
-                value={filterTag}
-                onChange={(e) => setFilterTag(e.target.value)}
-                className="bg-[#0c0e12] border border-[#262f3c] rounded-lg px-2.5 py-1.5 text-xs text-slate-200 outline-none focus:border-sky-500"
-              >
-                <option value="">全部標籤</option>
-                {tags.map((t) => (
-                  <option key={t} value={t}>
-                    # {t}
-                  </option>
-                ))}
-              </select>
+
 
               <button
                 onClick={() => setFilterRunningOnly(!filterRunningOnly)}
@@ -1086,18 +1097,18 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                 <th className="py-3 px-3">名稱</th>
                 <th className="py-3 px-3 w-28">狀態</th>
                 <th className="py-3 px-3">代理</th>
-                <th className="py-3 px-3">標籤</th>
-                <th className="py-3 px-3 w-60">備註</th>
+                <th className="py-3 px-3 w-48">備註</th>
+                <th className="py-3 px-3 w-44">外網 IP</th>
                 <th className="py-3 px-4 text-right">管理</th>
               </tr>
             </thead>
             <tbody className="divide-y divide-[#181d24] text-xs">
-              {filteredProfiles.map((profile) => {
+              {paginatedProfiles.map((profile) => {
                 const isSelected = selectedIds.includes(profile.id);
                 const runInfo = runningMap[profile.id];
                 const isRunning = Boolean(runInfo?.running);
                 const isBusy = Boolean(loadingMap[profile.id]);
-                const statusObj = statuses.find((s) => s.id === profile.statusId) || statuses[0];
+                const statusObj = statusMap.get(profile.statusId) || statuses[0];
 
                 // IP 重複檢測資訊
                 const isDuplicateRunning = duplicateRunningProfileIds.has(profile.id);
@@ -1106,13 +1117,15 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                   ? (duplicateRunningIpMap.get(runningIp) || []).filter((p) => p.id !== profile.id)
                   : [];
                 const effectiveIp = (runningIp || profile.lastPublicIp)?.trim();
+                const effectiveCountry = (isRunning && runInfo?.country ? runInfo.country : profile.lastCountry);
+                const effectiveCity = (isRunning && runInfo?.city ? runInfo.city : profile.lastCity);
                 const duplicateAllProfiles = effectiveIp
                   ? (duplicateAllIpMap.get(effectiveIp) || []).filter((p) => p.id !== profile.id)
                   : [];
 
                 let resolvedProxy: ProxyItem | null = null;
                 if (profile.proxyMode === 'saved' && profile.proxyId) {
-                  resolvedProxy = proxies.find((px) => px.id === profile.proxyId) || null;
+                  resolvedProxy = proxyMap.get(profile.proxyId) || null;
                 } else if (profile.proxyMode === 'custom' && profile.proxy) {
                   resolvedProxy = profile.proxy;
                 }
@@ -1145,21 +1158,11 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                     </td>
 
                     <td className="py-3 px-3">
-                      <div className="flex items-center gap-2">
-                        <span className="text-sm">
-                          {profile.os === 'macos' ? '🍎' : profile.os === 'linux' ? '🐧' : '🪟'}
-                        </span>
-                        <div>
-                          <div
-                            onClick={() => onOpenEdit(profile)}
-                            className="font-bold text-white hover:text-sky-300 cursor-pointer transition flex items-center gap-1.5"
-                          >
-                            <span>{profile.name}</span>
-                          </div>
-                          <div className="text-[10px] text-slate-500 font-mono">
-                            Seed: {profile.fingerprint?.seed}
-                          </div>
-                        </div>
+                      <div
+                        onClick={() => onOpenEdit(profile)}
+                        className="font-bold text-white hover:text-sky-300 cursor-pointer transition inline-flex items-center gap-1.5"
+                      >
+                        <span>{profile.name}</span>
                       </div>
                     </td>
 
@@ -1209,22 +1212,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                       </div>
                     </td>
 
-                    <td className="py-3 px-3">
-                      <div className="flex flex-wrap gap-1 max-w-[160px]">
-                        {(profile.tags || []).length > 0 ? (
-                          profile.tags.map((t) => (
-                            <span
-                              key={t}
-                              className="px-2 py-0.5 rounded-full bg-[#181d24] text-slate-300 text-[10px]"
-                            >
-                              #{t}
-                            </span>
-                          ))
-                        ) : (
-                          <span className="text-slate-600 text-[11px]">—</span>
-                        )}
-                      </div>
-                    </td>
+
 
                     <td className="py-3 px-3">
                       {editingNoteId === profile.id ? (
@@ -1264,6 +1252,73 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                           {profile.notes || <span className="text-slate-500">+ 備註</span>}
                         </div>
                       )}
+                    </td>
+
+                    <td className="py-3 px-3">
+                      <div className="flex flex-col gap-0.5">
+                        {effectiveIp ? (
+                          <div className="flex items-center gap-1.5">
+                            <span
+                              className={`font-mono text-xs font-semibold ${
+                                isRunning ? 'text-emerald-400' : 'text-slate-300'
+                              }`}
+                            >
+                              {effectiveIp}
+                            </span>
+                            {isRunning && (
+                              <button
+                                onClick={() => handleRefreshIp(profile.id)}
+                                title="重新整理外網 IP"
+                                className="text-slate-500 hover:text-sky-400 transition p-0.5 rounded cursor-pointer"
+                              >
+                                {runInfo?.ipLoading ? (
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin text-sky-400" />
+                                ) : (
+                                  <RefreshCw className="w-2.5 h-2.5" />
+                                )}
+                              </button>
+                            )}
+                          </div>
+                        ) : (
+                          <div className="flex items-center gap-1 text-slate-500 text-xs">
+                            {isRunning ? (
+                              runInfo?.ipLoading ? (
+                                <span className="flex items-center gap-1 text-sky-400 text-[11px]">
+                                  <Loader2 className="w-2.5 h-2.5 animate-spin" /> 偵測中...
+                                </span>
+                              ) : (
+                                <button
+                                  onClick={() => handleRefreshIp(profile.id)}
+                                  className="text-[11px] text-sky-400 hover:underline cursor-pointer flex items-center gap-1"
+                                >
+                                  <RefreshCw className="w-2.5 h-2.5" /> 點擊偵測
+                                </button>
+                              )
+                            ) : (
+                              <span className="text-slate-600 text-[11px]">未檢測</span>
+                            )}
+                          </div>
+                        )}
+
+                        {(effectiveCountry || effectiveCity) && (
+                          <div className="text-[10px] text-slate-500 flex items-center gap-1 truncate max-w-[140px]">
+                            <span>🌍</span>
+                            <span>{[effectiveCountry, effectiveCity].filter(Boolean).join(' ')}</span>
+                          </div>
+                        )}
+
+                        {isDuplicateRunning && duplicateRunningProfiles.length > 0 && (
+                          <div
+                            className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-rose-950/80 border border-rose-500/50 text-[10px] text-rose-300 font-semibold w-fit mt-0.5"
+                            title={`外網 IP 與「${duplicateRunningProfiles.map((p) => p.name).join('、')}」相同！`}
+                          >
+                            <AlertTriangle className="w-2.5 h-2.5 text-rose-400 shrink-0" />
+                            <span className="truncate max-w-[120px]">
+                              與「{duplicateRunningProfiles[0].name}」同 IP
+                            </span>
+                          </div>
+                        )}
+                      </div>
                     </td>
 
                     <td className="py-3 px-4 text-right">
@@ -1345,6 +1400,7 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                         </button>
                         <button
                           onClick={async () => {
+                            if (!window.confirm(`確定要刪除環境「${profile.name}」嗎？此操作將永久清除該環境資料！`)) return;
                             await api.deleteProfile(profile.id);
                             showToast(`已刪除：${profile.name}`);
                             setSelectedIds((prev) => prev.filter((x) => x !== profile.id));
@@ -1363,13 +1419,72 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
 
               {filteredProfiles.length === 0 && (
                 <tr>
-                  <td colSpan={8} className="py-16 text-center text-slate-500 text-xs">
+                  <td colSpan={7} className="py-16 text-center text-slate-500 text-xs">
                     尚無瀏覽器環境，請點擊右上角「建立環境」或「批量建立」
                   </td>
                 </tr>
               )}
             </tbody>
           </table>
+
+          {/* Pagination Toolbar */}
+          {filteredProfiles.length > 0 && (
+            <div className="px-4 py-2.5 bg-[#12161c] border-t border-[#262f3c] flex items-center justify-between text-xs text-slate-400 select-none">
+              <div className="flex items-center gap-2">
+                <span>
+                  顯示第{' '}
+                  <strong className="text-white">
+                    {pageSize === -1 ? 1 : (safeCurrentPage - 1) * pageSize + 1}
+                  </strong>{' '}
+                  至{' '}
+                  <strong className="text-white">
+                    {pageSize === -1 ? filteredProfiles.length : Math.min(safeCurrentPage * pageSize, filteredProfiles.length)}
+                  </strong>{' '}
+                  筆，共 <strong className="text-white">{filteredProfiles.length}</strong> 個環境
+                </span>
+                <span className="text-slate-600">|</span>
+                <div className="flex items-center gap-1.5">
+                  <span>每頁</span>
+                  <select
+                    value={pageSize}
+                    onChange={(e) => {
+                      setPageSize(Number(e.target.value));
+                      setCurrentPage(1);
+                    }}
+                    className="bg-[#0c0e12] border border-[#262f3c] rounded px-2 py-0.5 text-xs text-slate-200 outline-none cursor-pointer"
+                  >
+                    <option value={25}>25 筆</option>
+                    <option value={50}>50 筆</option>
+                    <option value={100}>100 筆</option>
+                    <option value={200}>200 筆</option>
+                    <option value={-1}>全部顯示</option>
+                  </select>
+                </div>
+              </div>
+
+              {pageSize !== -1 && totalPages > 1 && (
+                <div className="flex items-center gap-1">
+                  <button
+                    disabled={safeCurrentPage <= 1}
+                    onClick={() => setCurrentPage((p) => Math.max(1, p - 1))}
+                    className="px-2.5 py-1 rounded bg-[#181d24] hover:bg-[#202731] disabled:opacity-40 disabled:pointer-events-none text-slate-200 cursor-pointer border border-[#262f3c] transition"
+                  >
+                    上一頁
+                  </button>
+                  <span className="px-2 text-slate-300 font-semibold">
+                    {safeCurrentPage} / {totalPages}
+                  </span>
+                  <button
+                    disabled={safeCurrentPage >= totalPages}
+                    onClick={() => setCurrentPage((p) => Math.min(totalPages, p + 1))}
+                    className="px-2.5 py-1 rounded bg-[#181d24] hover:bg-[#202731] disabled:opacity-40 disabled:pointer-events-none text-slate-200 cursor-pointer border border-[#262f3c] transition"
+                  >
+                    下一頁
+                  </button>
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </div>
 

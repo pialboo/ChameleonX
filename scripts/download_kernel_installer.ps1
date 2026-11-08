@@ -43,7 +43,7 @@ try {
 
 if (-not $downloadUrl) {
     # 備用已知最新 release 直鏈
-    $downloadUrl = "https://github.com/adryfish/fingerprint-chromium/releases/download/150.0.7871.186-1.1/ungoogled-chromium_150.0.7871.186-1.1_windows_x64.zip"
+    $downloadUrl = "https://github.com/adryfish/fingerprint-chromium/releases/download/150.0.7871.186/ungoogled-chromium_150.0.7871.186-1.1_windows_x64.zip"
 }
 
 Write-Host "開始下載核心 (約 150MB)，請稍候..." -ForegroundColor Cyan

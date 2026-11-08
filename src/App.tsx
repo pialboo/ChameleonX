@@ -45,8 +45,33 @@ export const App: React.FC = () => {
 
   useEffect(() => {
     fetchState();
-    const interval = setInterval(fetchState, 2000);
-    return () => clearInterval(interval);
+    let intervalId: any = null;
+
+    const startPolling = (ms: number) => {
+      if (intervalId) clearInterval(intervalId);
+      intervalId = setInterval(fetchState, ms);
+    };
+
+    startPolling(2000);
+
+    const handleVisibility = () => {
+      if (document.hidden) {
+        // 當視窗縮小至系統匣或隱藏時降頻至 15 秒，避免背景空轉消耗 CPU
+        startPolling(15000);
+      } else {
+        fetchState();
+        startPolling(2000);
+      }
+    };
+
+    document.addEventListener('visibilitychange', handleVisibility);
+    window.addEventListener('focus', handleVisibility);
+
+    return () => {
+      if (intervalId) clearInterval(intervalId);
+      document.removeEventListener('visibilitychange', handleVisibility);
+      window.removeEventListener('focus', handleVisibility);
+    };
   }, [fetchState]);
 
   const handleOpenCreateModal = (mode: 'single' | 'mass' = 'single') => {

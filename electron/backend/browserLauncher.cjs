@@ -50,7 +50,20 @@ function findDownloadedFingerprintChromium(dir = KERNEL_DIR) {
 /**
  * Detect all available Chromium/Chrome executables on the machine
  */
-function detectKernels() {
+let cachedKernelInfo = null;
+let lastKernelDetectTime = 0;
+const KERNEL_CACHE_TTL_MS = 15000;
+
+function invalidateKernelCache() {
+  cachedKernelInfo = null;
+  lastKernelDetectTime = 0;
+}
+
+function detectKernels(force = false) {
+  const now = Date.now();
+  if (!force && cachedKernelInfo && (now - lastKernelDetectTime < KERNEL_CACHE_TTL_MS) && !kernelDownloadState.downloading) {
+    return { ...cachedKernelInfo, downloadState: kernelDownloadState };
+  }
   const settings = store.getState().settings || {};
   const fpChromePath = findDownloadedFingerprintChromium(KERNEL_DIR);
   const systemCandidates = [
@@ -137,29 +150,38 @@ async function downloadFingerprintChromium() {
   // Run asynchronously so HTTP request returns immediately
   (async () => {
     try {
-      const releaseRes = await fetch('https://api.github.com/repos/adryfish/fingerprint-chromium/releases/latest', {
-        headers: { 'User-Agent': 'Dolphin-Anty-TW-Desktop' },
-      });
-      if (!releaseRes.ok) {
-        throw new Error(`無法取得 GitHub Release (HTTP ${releaseRes.status})`);
-      }
-      const releaseData = await releaseRes.json();
-      const version = releaseData.tag_name || 'latest';
-      const winZipAsset = (releaseData.assets || []).find(
-        (a) => a.name && a.name.toLowerCase().includes('windows') && a.name.toLowerCase().endsWith('.zip')
-      );
-      if (!winZipAsset) {
-        throw new Error('在最新 Release 中找不到 Windows .zip 檔案');
+      let version = '150.0.7871.186';
+      let downloadUrl = 'https://github.com/adryfish/fingerprint-chromium/releases/download/150.0.7871.186/ungoogled-chromium_150.0.7871.186-1.1_windows_x64.zip';
+      let totalBytes = 193743241;
+
+      try {
+        const releaseRes = await fetch('https://api.github.com/repos/adryfish/fingerprint-chromium/releases/latest', {
+          headers: { 'User-Agent': 'ChameleonX-Desktop' },
+        });
+        if (releaseRes.ok) {
+          const releaseData = await releaseRes.json();
+          version = releaseData.tag_name || version;
+          const winZipAsset = (releaseData.assets || []).find(
+            (a) => a.name && a.name.toLowerCase().includes('windows') && a.name.toLowerCase().endsWith('.zip')
+          );
+          if (winZipAsset) {
+            downloadUrl = winZipAsset.browser_download_url;
+            totalBytes = Number(winZipAsset.size) || totalBytes;
+          }
+        } else {
+          console.warn('[ChameleonX] GitHub API rate limited, using direct download link');
+        }
+      } catch (apiErr) {
+        console.warn('[ChameleonX] GitHub API query error, using direct download link:', apiErr.message);
       }
 
-      const totalBytes = Number(winZipAsset.size) || 190 * 1024 * 1024;
       const totalMB = (totalBytes / (1024 * 1024)).toFixed(1);
       kernelDownloadState.version = version;
       kernelDownloadState.totalMB = totalMB;
       kernelDownloadState.statusText = `正在下載 Fingerprint-Chromium v${version} (${totalMB} MB)...`;
 
       const zipFilePath = path.join(KERNEL_DIR, `fp_chromium_${version}.zip`);
-      const response = await fetch(winZipAsset.browser_download_url);
+      const response = await fetch(downloadUrl);
       if (!response.ok || !response.body) {
         throw new Error(`下載失敗 (HTTP ${response.status})`);
       }
@@ -197,6 +219,7 @@ async function downloadFingerprintChromium() {
 
       store.getState().settings.kernelMode = 'fingerprint-chromium';
       store.save();
+      invalidateKernelCache();
 
       kernelDownloadState = {
         downloading: false,
@@ -275,14 +298,54 @@ function syncProfileBookmarks(profileDir, bookmarks = [], userExtPaths = []) {
     fs.mkdirSync(defaultDir, { recursive: true });
     const bookmarksPath = path.join(defaultDir, 'Bookmarks');
 
-    const children = (bookmarks || []).map((bm, idx) => ({
-      date_added: String(13350000000000000 + idx),
-      guid: `00000000-0000-4000-8000-${String(idx + 100).padStart(12, '0')}`,
-      id: String(idx + 5),
-      name: bm.title || bm.name || '書籤',
-      type: 'url',
-      url: bm.url || 'https://www.google.com',
-    }));
+    // Group bookmarks: root items vs folder items
+    const folderMap = new Map();
+    const rootItems = [];
+
+    (bookmarks || []).forEach((bm) => {
+      const fName = (bm.folder || '').trim();
+      if (fName) {
+        if (!folderMap.has(fName)) folderMap.set(fName, []);
+        folderMap.get(fName).push(bm);
+      } else {
+        rootItems.push(bm);
+      }
+    });
+
+    let nodeIdx = 10;
+    const children = [];
+
+    // 1. Folder nodes
+    for (const [fName, items] of folderMap.entries()) {
+      children.push({
+        date_added: String(13350000000000000 + nodeIdx),
+        date_modified: String(13350000000000000 + nodeIdx),
+        guid: `00000000-0000-4000-8000-${String(nodeIdx + 100).padStart(12, '0')}`,
+        id: String(nodeIdx++),
+        name: fName,
+        type: 'folder',
+        children: items.map((bm) => ({
+          date_added: String(13350000000000000 + nodeIdx),
+          guid: `00000000-0000-4000-8000-${String(nodeIdx + 100).padStart(12, '0')}`,
+          id: String(nodeIdx++),
+          name: bm.title || bm.name || '書籤',
+          type: 'url',
+          url: bm.url || 'https://www.google.com',
+        })),
+      });
+    }
+
+    // 2. Direct root bookmarks
+    rootItems.forEach((bm) => {
+      children.push({
+        date_added: String(13350000000000000 + nodeIdx),
+        guid: `00000000-0000-4000-8000-${String(nodeIdx + 100).padStart(12, '0')}`,
+        id: String(nodeIdx++),
+        name: bm.title || bm.name || '書籤',
+        type: 'url',
+        url: bm.url || 'https://www.google.com',
+      });
+    });
 
     const bookmarkJson = {
       checksum: '',
@@ -526,8 +589,16 @@ async function launchProfile(profileId, windowBounds = null) {
     '--disable-background-networking',
     '--disable-sync',
     '--disable-translate',
-    '--disable-features=RendererCodeIntegrity',
+    '--disable-component-update',
+    '--disable-features=OptimizationGuideModelDownloading,OptimizationHints,OptimizationHintsFetching,Translate,MediaRouter,AudioServiceOutOfProcess',
     '--disable-crash-reporter',
+    '--disable-breakpad',
+    '--disable-domain-reliability',
+    '--disable-gpu-shader-disk-cache',
+    '--disk-cache-size=33554432',
+    '--media-cache-size=16777216',
+    '--js-flags=--max-old-space-size=512',
+    '--disable-background-timer-throttling',
   ];
 
   // Native fingerprint-chromium C++ flags (harmlessly ignored by standard Chrome, natively used by fingerprint-chromium!)
@@ -606,9 +677,18 @@ async function launchProfile(profileId, windowBounds = null) {
 
   args.push(...startUrls);
 
+  if (!fs.existsSync(kernelInfo.activeKernel.path)) {
+    throw new Error('瀏覽器執行檔不存在：' + kernelInfo.activeKernel.path);
+  }
+
   const proc = spawn(kernelInfo.activeKernel.path, args, {
     detached: false,
     stdio: 'ignore',
+  });
+
+  proc.on('error', (err) => {
+    console.error('[ChameleonX] Kernel process error for ' + profile.id + ':', err);
+    runningProfiles.delete(profile.id);
   });
 
   const startedAt = new Date().toISOString();
@@ -619,9 +699,9 @@ async function launchProfile(profileId, windowBounds = null) {
     anonymizedProxyUrl,
     startedAt,
     kernelName: kernelInfo.activeKernel.name,
-    publicIp: null,
-    country: null,
-    city: null,
+    publicIp: profile.lastPublicIp || null,
+    country: profile.lastCountry || null,
+    city: profile.lastCity || null,
     isp: null,
     ipLoading: true,
   });
@@ -718,7 +798,16 @@ async function stopProfile(profileId) {
     }
   } catch (e) {}
 
+  const pidToKill = entry.pid;
   runningProfiles.delete(profileId);
+
+  // Guarantee child renderers and GPU processes are cleaned up on Windows
+  if (pidToKill && process.platform === 'win32') {
+    setTimeout(() => {
+      execFile('taskkill.exe', ['/PID', String(pidToKill), '/T', '/F'], () => {});
+    }, 1200);
+  }
+
   if (entry.anonymizedProxyUrl) {
     try {
       await proxyChain.closeAnonymizedProxy(entry.anonymizedProxyUrl, true);
@@ -1112,7 +1201,7 @@ async function tileRunningWindows(options = {}) {
             },
           });
 
-          // Bring this browser window to the front so it shows above the Dolphin Anty control window
+          // Bring this browser window to the front so it shows above the ChameleonX control window
           if (pageTarget.webSocketDebuggerUrl) {
             await new Promise((resolve) => {
               const ws = new WebSocket(pageTarget.webSocketDebuggerUrl);
@@ -1199,6 +1288,7 @@ async function bringRunningWindowsToTop(options = {}) {
 
 module.exports = {
   detectKernels,
+  invalidateKernelCache,
   downloadFingerprintChromium,
   launchProfile,
   stopProfile,

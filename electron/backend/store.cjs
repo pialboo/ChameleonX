@@ -78,24 +78,75 @@ class DataStore {
   }
 
   load() {
-    if (fs.existsSync(DB_FILE)) {
-      try {
-        const raw = fs.readFileSync(DB_FILE, 'utf8');
-        this.data = JSON.parse(raw);
-        return;
-      } catch (e) {
-        console.error('Failed to parse db.json, falling back to defaults:', e);
+    const defaults = getDefaultData();
+    const tryParse = (filepath) => {
+      if (fs.existsSync(filepath)) {
+        try {
+          const raw = fs.readFileSync(filepath, 'utf8');
+          const parsed = JSON.parse(raw);
+          return {
+            ...defaults,
+            ...parsed,
+            settings: { ...defaults.settings, ...(parsed.settings || {}) },
+            profiles: Array.isArray(parsed.profiles) ? parsed.profiles : [],
+            proxies: Array.isArray(parsed.proxies) ? parsed.proxies : [],
+            extensions: Array.isArray(parsed.extensions) ? parsed.extensions : [],
+            statuses: Array.isArray(parsed.statuses) && parsed.statuses.length > 0 ? parsed.statuses : defaults.statuses,
+            folders: Array.isArray(parsed.folders) && parsed.folders.length > 0 ? parsed.folders : defaults.folders,
+            tags: Array.isArray(parsed.tags) ? parsed.tags : [],
+            bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks : [],
+          };
+        } catch (e) {
+          console.error(`Failed to parse ${filepath}:`, e);
+        }
+      }
+      return null;
+    };
+
+    // 1. Try reading primary db.json
+    let loaded = tryParse(DB_FILE);
+
+    // 2. If corrupted or missing, try recovering from db.json.bak
+    if (!loaded) {
+      const bakFile = `${DB_FILE}.bak`;
+      loaded = tryParse(bakFile);
+      if (loaded) {
+        console.warn('[ChameleonX] Successfully recovered database from db.json.bak');
       }
     }
-    this.data = getDefaultData();
+
+    this.data = loaded || defaults;
     this.save();
   }
 
   save() {
     ensureDirs();
+    const dataStr = JSON.stringify(this.data, null, 2);
     const tmpFile = `${DB_FILE}.tmp`;
-    fs.writeFileSync(tmpFile, JSON.stringify(this.data, null, 2), 'utf8');
-    fs.renameSync(tmpFile, DB_FILE);
+    const bakFile = `${DB_FILE}.bak`;
+
+    try {
+      // 1. Keep a safe backup copy before writing
+      if (fs.existsSync(DB_FILE)) {
+        try {
+          fs.copyFileSync(DB_FILE, bakFile);
+        } catch (e) {}
+      }
+
+      // 2. Write to temp file first
+      fs.writeFileSync(tmpFile, dataStr, 'utf8');
+
+      // 3. Atomically replace db.json on Windows
+      try {
+        fs.renameSync(tmpFile, DB_FILE);
+      } catch (renameErr) {
+        // Fallback for Windows EPERM / EBUSY locks
+        fs.copyFileSync(tmpFile, DB_FILE);
+        try { fs.unlinkSync(tmpFile); } catch (e) {}
+      }
+    } catch (err) {
+      console.error('[ChameleonX] Critical error saving db.json:', err);
+    }
   }
 
   getState() {
