@@ -10,9 +10,15 @@ try {
 }
 
 function resolveDataDir() {
+  if (process.env.CHAMELEON_DATA_DIR) {
+    return process.env.CHAMELEON_DATA_DIR;
+  }
   if (app && app.isPackaged) {
     // 打包安裝模式下：儲存在使用者專屬的 AppData 目錄，避免 Program Files 權限不足問題
     return path.join(app.getPath('appData'), 'ChameleonX', 'data');
+  }
+  if (process.env.APPDATA && (process.env.NODE_ENV === 'production' || process.env.TAURI_ENV_ARCH)) {
+    return path.join(process.env.APPDATA, 'ChameleonX', 'data');
   }
   // 開發模式或獨立執行腳本：使用專案目錄下的 data
   return path.join(process.cwd(), 'data');

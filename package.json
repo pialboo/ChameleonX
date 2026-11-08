@@ -13,7 +13,10 @@
     "dev": "node scripts/dev.cjs",
     "build": "vite build",
     "start": "electron .",
-    "dist": "npm run build && electron-builder"
+    "dist": "npm run build && electron-builder",
+    "tauri": "tauri",
+    "tauri:dev": "tauri dev",
+    "tauri:build": "tauri build"
   },
   "build": {
     "appId": "com.chameleonx.app",
@@ -60,6 +63,9 @@
     }
   },
   "dependencies": {
+    "@tauri-apps/api": "^2.12.4",
+    "@tauri-apps/plugin-dialog": "^2.8.4",
+    "@tauri-apps/plugin-opener": "^2.7.2",
     "adm-zip": "^0.5.16",
     "cors": "^2.8.5",
     "express": "^4.21.2",
