@@ -501,9 +501,10 @@ function buildProfileCoreExtension(profileDir, profile, settings = {}) {
   } catch (e) {}
 })();`;
 
+  const activeSyncPort = process.env.CHAMELEON_PORT || '19888';
   const backgroundJs = `
 const PROFILE_ID = ${JSON.stringify(profile.id)};
-const WS_URL = 'ws://127.0.0.1:19888/ws-sync?profileId=' + encodeURIComponent(PROFILE_ID);
+const WS_URL = 'ws://127.0.0.1:' + ${JSON.stringify(activeSyncPort)} + '/ws-sync?profileId=' + encodeURIComponent(PROFILE_ID);
 let ws = null;
 
 function connectWs() {

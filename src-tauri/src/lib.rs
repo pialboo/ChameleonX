@@ -9,10 +9,21 @@ use tauri::{
 
 const CREATE_NO_WINDOW: u32 = 0x08000000;
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 struct BackendState {
     child: Arc<Mutex<Option<Child>>>,
     is_quitting: Arc<Mutex<bool>>,
+    port: Arc<Mutex<u16>>,
+}
+
+#[tauri::command]
+fn get_backend_port(state: tauri::State<BackendState>) -> u16 {
+    let p = *state.port.lock().unwrap();
+    if p == 0 {
+        19888
+    } else {
+        p
+    }
 }
 
 #[tauri::command]
@@ -83,17 +94,37 @@ fn find_backend_executable() -> Option<std::path::PathBuf> {
     None
 }
 
-fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
-    // Check if backend on 127.0.0.1:19888 is already running
-    if std::net::TcpStream::connect("127.0.0.1:19888").is_ok() {
-        println!("[ChameleonX] Backend already active on port 19888.");
-        return;
+fn find_available_port(preferred: u16) -> u16 {
+    // 1. If preferred port is available, use it
+    if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", preferred)) {
+        drop(listener);
+        return preferred;
     }
+
+    // 2. Otherwise scan ports preferred+1 ..= preferred+30
+    for p in (preferred + 1)..=(preferred + 30) {
+        if let Ok(listener) = std::net::TcpListener::bind(("127.0.0.1", p)) {
+            drop(listener);
+            return p;
+        }
+    }
+    preferred
+}
+
+fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>, port_holder: Arc<Mutex<u16>>) {
+    let target_port = find_available_port(19888);
+    {
+        let mut p = port_holder.lock().unwrap();
+        *p = target_port;
+    }
+    println!("[ChameleonX] Target backend port resolved to: {}", target_port);
 
     // Priority 1: Standalone sidecar binary (No external Node.js required!)
     if let Some(backend_bin) = find_backend_executable() {
         println!("[ChameleonX] Spawning standalone backend sidecar: {}", backend_bin.display());
         let mut cmd = Command::new(&backend_bin);
+        cmd.arg(format!("--port={}", target_port));
+        cmd.env("CHAMELEON_PORT", target_port.to_string());
         cmd.stdin(std::process::Stdio::piped());
         cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -105,7 +136,7 @@ fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
 
         match cmd.spawn() {
             Ok(child) => {
-                println!("[ChameleonX] Standalone backend sidecar process started (PID: {})", child.id());
+                println!("[ChameleonX] Standalone backend sidecar process started (PID: {}) on port {}", child.id(), target_port);
                 let mut guard = child_holder.lock().unwrap();
                 *guard = Some(child);
                 return;
@@ -132,10 +163,12 @@ fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
         std::path::PathBuf::from("electron/backend/standalone.cjs")
     };
 
-    println!("[ChameleonX] Spawning backend fallback: node {}", script_path.display());
+    println!("[ChameleonX] Spawning backend fallback: node {} --port={}", script_path.display(), target_port);
 
     let mut cmd = Command::new("node");
     cmd.arg(&script_path);
+    cmd.arg(format!("--port={}", target_port));
+    cmd.env("CHAMELEON_PORT", target_port.to_string());
     cmd.stdin(std::process::Stdio::piped());
     cmd.creation_flags(CREATE_NO_WINDOW);
 
@@ -147,7 +180,7 @@ fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
 
     match cmd.spawn() {
         Ok(child) => {
-            println!("[ChameleonX] Backend child process started (PID: {})", child.id());
+            println!("[ChameleonX] Backend child process started (PID: {}) on port {}", child.id(), target_port);
             let mut guard = child_holder.lock().unwrap();
             *guard = Some(child);
         }
@@ -162,8 +195,10 @@ pub fn run() {
     let backend_state = BackendState::default();
     let child_holder = backend_state.child.clone();
     let is_quitting = backend_state.is_quitting.clone();
+    let port_holder = backend_state.port.clone();
 
     tauri::Builder::default()
+        .manage(backend_state)
         .plugin(tauri_plugin_log::Builder::default().build())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_opener::init())
@@ -174,12 +209,12 @@ pub fn run() {
                 let _ = window.set_focus();
             }
         }))
-        .invoke_handler(tauri::generate_handler![window_control, open_external])
+        .invoke_handler(tauri::generate_handler![window_control, open_external, get_backend_port])
         .setup(move |app| {
             let handle = app.handle();
 
             // 1. Start backend process
-            start_backend_if_needed(child_holder.clone());
+            start_backend_if_needed(child_holder.clone(), port_holder.clone());
 
             // 2. Build Tray Menu
             let item_show = MenuItem::with_id(handle, "show", "🦎 顯示 ChameleonX 主視窗", true, None::<&str>)?;

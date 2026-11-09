@@ -224,6 +224,16 @@ function createApiServer(electronDialogHandler = null) {
   app.use(cors());
   app.use(express.json({ limit: '50mb' }));
 
+  // Health check endpoint for port & service ownership verification
+  app.get('/api/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      app: 'chameleonx',
+      version: '1.0.3',
+      timestamp: Date.now(),
+    });
+  });
+
   // Full application state
   app.get('/api/state', (req, res) => {
     const state = store.getState();

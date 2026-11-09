@@ -5,7 +5,15 @@ const { createApiServer } = require('./apiServer.cjs');
 const { attachSyncWebSocketServer } = require('./syncHub.cjs');
 const { batchStopProfiles } = require('./browserLauncher.cjs');
 
-const PORT = 19888;
+// Parse --port argument or fallback to env / 19888
+const portArg = process.argv.find((a) => a.startsWith('--port='));
+let initialPort = 19888;
+if (portArg) {
+  initialPort = parseInt(portArg.split('=')[1], 10) || 19888;
+} else if (process.env.CHAMELEON_PORT) {
+  initialPort = parseInt(process.env.CHAMELEON_PORT, 10) || 19888;
+}
+
 const HOST = '127.0.0.1';
 
 // Server dialog handler fallback (Tauri handles dialogs on frontend via @tauri-apps/plugin-dialog)
@@ -27,19 +35,42 @@ if (fs.existsSync(distPath)) {
   expressApp.use(require('express').static(distPath));
 }
 
-const server = expressApp.listen(PORT, HOST, () => {
-  attachSyncWebSocketServer(server);
-  console.log(`[ChameleonX Backend] Ready at http://${HOST}:${PORT}`);
-});
+let activePort = initialPort;
+let maxRetries = 20;
 
-server.on('error', (err) => {
-  if (err.code === 'EADDRINUSE') {
-    console.log(`[ChameleonX Backend] Port ${PORT} already active, reusing existing backend instance.`);
-    process.exit(0);
-  } else {
-    console.error('[ChameleonX Backend] Server error:', err);
-  }
-});
+function tryListen(port, retriesLeft) {
+  const srv = http.createServer(expressApp);
+
+  srv.on('error', (err) => {
+    if (err.code === 'EADDRINUSE') {
+      if (retriesLeft > 0) {
+        console.warn(`[ChameleonX Backend] Port ${port} is in use, hunting for next available port (${port + 1})...`);
+        tryListen(port + 1, retriesLeft - 1);
+      } else {
+        console.error(`[ChameleonX Backend] Fatal: Unable to find an available port in range.`);
+        process.exit(1);
+      }
+    } else {
+      console.error('[ChameleonX Backend] Server error:', err);
+    }
+  });
+
+  srv.listen(port, HOST, () => {
+    activePort = port;
+    process.env.CHAMELEON_PORT = String(port);
+    attachSyncWebSocketServer(srv);
+    console.log(`[ChameleonX Backend] Ready at http://${HOST}:${port} (Port verified)`);
+
+    // Write ephemeral active port file so other components / CLI can read it
+    try {
+      const { DATA_DIR } = require('./store.cjs');
+      const portFile = path.join(DATA_DIR, '.active_port');
+      fs.writeFileSync(portFile, JSON.stringify({ port, pid: process.pid, timestamp: Date.now() }), 'utf8');
+    } catch (e) {}
+  });
+}
+
+tryListen(initialPort, maxRetries);
 
 let isCleaningUp = false;
 async function cleanup() {
@@ -63,6 +94,14 @@ process.stdin.on('end', () => {
 process.stdin.on('close', () => {
   console.log('[ChameleonX Backend] Stdin closed, shutting down...');
   cleanup();
+});
+
+// Guard against unhandled errors causing unexpected process crash
+process.on('uncaughtException', (err) => {
+  console.error('[ChameleonX Backend] Uncaught Exception:', err);
+});
+process.on('unhandledRejection', (reason) => {
+  console.error('[ChameleonX Backend] Unhandled Rejection:', reason);
 });
 
 process.on('SIGINT', cleanup);

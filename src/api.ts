@@ -1,3 +1,4 @@
+import { isTauri, invoke } from '@tauri-apps/api/core';
 import {
   AppState,
   FingerprintConfig,
@@ -11,10 +12,27 @@ import {
   RestoreOptions,
 } from './types';
 
-const API_BASE = 'http://127.0.0.1:19888/api';
+let cachedBackendPort: number | null = null;
+
+export async function getActiveBackendPort(): Promise<number> {
+  if (cachedBackendPort) return cachedBackendPort;
+  if (typeof window !== 'undefined' && isTauri()) {
+    try {
+      const port = await invoke<number>('get_backend_port');
+      if (port && typeof port === 'number') {
+        cachedBackendPort = port;
+        return port;
+      }
+    } catch (e) {
+      // Fallback to default
+    }
+  }
+  return 19888;
+}
 
 async function request<T = any>(path: string, options?: RequestInit): Promise<T> {
-  const res = await fetch(`${API_BASE}${path}`, {
+  const port = await getActiveBackendPort();
+  const res = await fetch(`http://127.0.0.1:${port}/api${path}`, {
     headers: { 'Content-Type': 'application/json' },
     ...options,
   });
