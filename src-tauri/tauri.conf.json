@@ -29,6 +29,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "windows": {
+      "nsis": {
+        "installerHooks": "hooks.nsh",
+        "languages": ["TradChinese", "English"]
+      }
+    },
     "externalBin": [
       "binaries/chameleon-backend"
     ],
