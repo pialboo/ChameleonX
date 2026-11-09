@@ -16,35 +16,65 @@ let cachedBackendPort: number | null = null;
 
 export async function getActiveBackendPort(): Promise<number> {
   if (cachedBackendPort) return cachedBackendPort;
-  if (typeof window !== 'undefined' && isTauri()) {
-    try {
-      const port = await invoke<number>('get_backend_port');
-      if (port && typeof port === 'number') {
-        cachedBackendPort = port;
-        return port;
+  if (typeof window !== 'undefined') {
+    if (window.electronAPI && typeof window.electronAPI.getBackendPort === 'function') {
+      try {
+        const port = await window.electronAPI.getBackendPort();
+        if (port && typeof port === 'number') {
+          cachedBackendPort = port;
+          return port;
+        }
+      } catch (e) {}
+    }
+    if (isTauri()) {
+      try {
+        const port = await invoke<number>('get_backend_port');
+        if (port && typeof port === 'number') {
+          cachedBackendPort = port;
+          return port;
+        }
+      } catch (e) {
+        // Fallback to default
       }
-    } catch (e) {
-      // Fallback to default
     }
   }
   return 19888;
 }
 
-async function request<T = any>(path: string, options?: RequestInit): Promise<T> {
+async function request<T = any>(path: string, options?: RequestInit, timeoutMs = 15000): Promise<T> {
   const port = await getActiveBackendPort();
-  const res = await fetch(`http://127.0.0.1:${port}/api${path}`, {
-    headers: { 'Content-Type': 'application/json' },
-    ...options,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) {
-    throw new Error(data.error || `請求失敗 (${res.status})`);
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+
+  try {
+    const res = await fetch(`http://127.0.0.1:${port}/api${path}`, {
+      headers: { 'Content-Type': 'application/json' },
+      signal: controller.signal,
+      ...options,
+    });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) {
+      throw new Error(data.error || `請求失敗 (${res.status})`);
+    }
+    return data as T;
+  } catch (err: any) {
+    if (err.name === 'AbortError') {
+      throw new Error(`請求逾時 (${Math.round(timeoutMs / 1000)} 秒)，請檢查後端服務狀態或網路連線`);
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeoutId);
   }
-  return data as T;
 }
 
 export const api = {
   getState: () => request<AppState>('/state'),
+
+  getRunningStatus: () =>
+    request<{ runningMap: any; syncState: any }>('/running-status'),
+
+  cancelBatchLaunch: () =>
+    request<{ ok: boolean }>('/profiles/batch-launch/cancel', { method: 'POST' }),
 
   generateFingerprint: (params: Partial<FingerprintConfig>) =>
     request<FingerprintConfig>('/fingerprint/generate', {
@@ -113,7 +143,7 @@ export const api = {
     request('/profiles/bulk', {
       method: 'POST',
       body: JSON.stringify({ action, profileIds, payload }),
-    }),
+    }, action === 'launch' || action === 'delete' || action === 'export-cookies' ? 120000 : 30000),
 
   // Proxies
   addProxies: (payload: any) =>
@@ -294,19 +324,19 @@ export const api = {
     }>('/backup/create', {
       method: 'POST',
       body: JSON.stringify(options),
-    }),
+    }, 120000),
 
   inspectBackup: (payload: { filePath?: string; base64Data?: string }) =>
     request<BackupInspectResult>('/backup/inspect', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }),
+    }, 60000),
 
   restoreBackup: (payload: { filePath?: string; base64Data?: string; options: RestoreOptions }) =>
     request<BackupRestoreResult>('/backup/restore', {
       method: 'POST',
       body: JSON.stringify(payload),
-    }),
+    }, 180000),
 
   listSnapshots: () =>
     request<SnapshotItem[]>('/backup/snapshots'),
@@ -320,7 +350,7 @@ export const api = {
     request<BackupRestoreResult>(`/backup/snapshots/${encodeURIComponent(filename)}/restore`, {
       method: 'POST',
       body: JSON.stringify({ options }),
-    }),
+    }, 180000),
 
   selectSaveFile: async (options?: { title?: string; defaultPath?: string; filters?: any[] }) => {
     if (window.electronAPI && typeof window.electronAPI.saveFile === 'function') {

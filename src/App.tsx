@@ -45,6 +45,22 @@ export const App: React.FC = () => {
     }
   }, []);
 
+  const pollRunningStatus = useCallback(async () => {
+    try {
+      const res = await api.getRunningStatus();
+      setState((prev) => {
+        if (!prev) return prev;
+        return {
+          ...prev,
+          runningMap: res.runningMap,
+          syncState: res.syncState,
+        };
+      });
+    } catch (e) {
+      // ignore transient poll error
+    }
+  }, []);
+
   useEffect(() => {
     let intervalId: any = null;
     let fastRetryTimer: any = null;
@@ -53,7 +69,7 @@ export const App: React.FC = () => {
 
     const startPolling = (ms: number) => {
       if (intervalId) clearInterval(intervalId);
-      intervalId = setInterval(fetchState, ms);
+      intervalId = setInterval(pollRunningStatus, ms);
     };
 
     // Fast initial retry so UI connects instantaneously the moment the backend port opens
@@ -91,7 +107,7 @@ export const App: React.FC = () => {
       document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('focus', handleVisibility);
     };
-  }, [fetchState]);
+  }, [fetchState, pollRunningStatus]);
 
   const handleOpenCreateModal = (mode: 'single' | 'mass' = 'single') => {
     setEditingProfile(null);

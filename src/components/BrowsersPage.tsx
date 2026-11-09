@@ -522,9 +522,21 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
     }
   };
 
+  const [isLaunchingBatch, setIsLaunchingBatch] = useState(false);
+
+  const handleCancelBatchLaunch = async () => {
+    try {
+      await api.cancelBatchLaunch();
+      showToast('已發送取消批量啟動指令');
+    } catch (e: any) {
+      showToast(e.message, 'error');
+    }
+  };
+
   const handleBulkLaunch = async () => {
-    if (selectedIds.length === 0) return;
+    if (selectedIds.length === 0 || isLaunchingBatch) return;
     setBulkLoading(true);
+    setIsLaunchingBatch(true);
     try {
       await api.bulkAction('launch', selectedIds, {
         autoTile: autoTileBatch,
@@ -533,12 +545,13 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
         screenWidth: window.screen.availWidth || 1920,
         screenHeight: window.screen.availHeight || 1040,
       });
-      showToast(`已批量啟動 ${selectedIds.length} 個環境`);
+      showToast(`批量啟動已完成`);
       onRefresh();
     } catch (err: any) {
       showToast(err.message, 'error');
     } finally {
       setBulkLoading(false);
+      setIsLaunchingBatch(false);
     }
   };
 
@@ -557,27 +570,48 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
   };
 
   const handleBulkNewFingerprint = async () => {
-    if (selectedIds.length === 0) return;
-    await api.bulkAction('new-fingerprint', selectedIds);
-    showToast(`已為 ${selectedIds.length} 個環境更換新指紋`);
-    onRefresh();
+    if (selectedIds.length === 0 || bulkLoading) return;
+    setBulkLoading(true);
+    try {
+      await api.bulkAction('new-fingerprint', selectedIds);
+      showToast(`已為 ${selectedIds.length} 個環境更換新指紋`);
+      onRefresh();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setBulkLoading(false);
+    }
   };
 
   const handleBulkExportCookies = async () => {
-    if (selectedIds.length === 0) return;
-    const res = await api.bulkAction('export-cookies', selectedIds);
-    const jsonStr = JSON.stringify(res.cookiesByProfile, null, 2);
-    navigator.clipboard.writeText(jsonStr);
-    showToast(`已匯出 ${selectedIds.length} 個環境的 Cookie 至剪貼簿`);
+    if (selectedIds.length === 0 || bulkLoading) return;
+    setBulkLoading(true);
+    try {
+      const res = await api.bulkAction('export-cookies', selectedIds);
+      const jsonStr = JSON.stringify(res.cookiesByProfile, null, 2);
+      navigator.clipboard.writeText(jsonStr);
+      showToast(`已匯出 ${selectedIds.length} 個環境的 Cookie 至剪貼簿`);
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setBulkLoading(false);
+    }
   };
 
   const handleBulkDelete = async () => {
-    if (selectedIds.length === 0) return;
+    if (selectedIds.length === 0 || bulkLoading) return;
     if (!window.confirm(`確定要刪除所選取的 ${selectedIds.length} 個環境嗎？此操作將永久清除環境資料與設定！`)) return;
-    await api.bulkAction('delete', selectedIds);
-    showToast(`已刪除 ${selectedIds.length} 個環境`);
-    setSelectedIds([]);
-    onRefresh();
+    setBulkLoading(true);
+    try {
+      await api.bulkAction('delete', selectedIds);
+      showToast(`已刪除 ${selectedIds.length} 個環境`);
+      setSelectedIds([]);
+      onRefresh();
+    } catch (err: any) {
+      showToast(err.message, 'error');
+    } finally {
+      setBulkLoading(false);
+    }
   };
 
   const handleExecuteBulkModal = async () => {
@@ -903,6 +937,16 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                 <Play className="w-3 h-3 fill-current" />
                 <span>批量啟動</span>
               </button>
+
+              {isLaunchingBatch && (
+                <button
+                  onClick={handleCancelBatchLaunch}
+                  className="px-2.5 py-1 rounded-lg bg-amber-600 hover:bg-amber-500 text-white text-xs font-bold flex items-center gap-1 cursor-pointer transition shadow-sm animate-pulse"
+                >
+                  <X className="w-3.5 h-3.5" />
+                  <span>取消啟動</span>
+                </button>
+              )}
 
               <button
                 disabled={bulkLoading}
@@ -1358,24 +1402,36 @@ export const BrowsersPage: React.FC<BrowsersPageProps> = ({
                           <Cookie className="w-3.5 h-3.5" />
                         </button>
                         <button
+                          disabled={isBusy}
                           onClick={async () => {
-                            await api.bulkAction('new-fingerprint', [profile.id]);
-                            showToast(`已更換「${profile.name}」的指紋`);
-                            onRefresh();
+                            if (isBusy) return;
+                            try {
+                              await api.bulkAction('new-fingerprint', [profile.id]);
+                              showToast(`已更換「${profile.name}」的指紋`);
+                              onRefresh();
+                            } catch (e: any) {
+                              showToast(e.message, 'error');
+                            }
                           }}
                           title="隨機更換指紋"
-                          className="p-1.5 rounded-lg bg-[#181d24] hover:bg-sky-600 text-slate-300 hover:text-white transition cursor-pointer"
+                          className="p-1.5 rounded-lg bg-[#181d24] hover:bg-sky-600 text-slate-300 hover:text-white transition cursor-pointer disabled:opacity-50"
                         >
                           <Dices className="w-3.5 h-3.5" />
                         </button>
                         <button
+                          disabled={isBusy}
                           onClick={async () => {
-                            await api.cloneProfile(profile.id);
-                            showToast(`已複製：${profile.name}`);
-                            onRefresh();
+                            if (isBusy) return;
+                            try {
+                              await api.cloneProfile(profile.id);
+                              showToast(`已複製：${profile.name}`);
+                              onRefresh();
+                            } catch (e: any) {
+                              showToast(e.message, 'error');
+                            }
                           }}
                           title="複製環境"
-                          className="p-1.5 rounded-lg bg-[#181d24] hover:bg-emerald-600 text-slate-300 hover:text-white transition cursor-pointer"
+                          className="p-1.5 rounded-lg bg-[#181d24] hover:bg-emerald-600 text-slate-300 hover:text-white transition cursor-pointer disabled:opacity-50"
                         >
                           <Copy className="w-3.5 h-3.5" />
                         </button>

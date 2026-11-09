@@ -91,7 +91,13 @@ class DataStore {
   constructor() {
     ensureDirs();
     this.data = null;
+    this._saveTimer = null;
     this.load();
+
+    // Ensure pending changes are written before process exits
+    const flushOnExit = () => this.saveImmediate();
+    process.on('beforeExit', flushOnExit);
+    process.on('exit', flushOnExit);
   }
 
   load() {
@@ -133,10 +139,28 @@ class DataStore {
     }
 
     this.data = loaded || defaults;
-    this.save();
+    this.saveImmediate();
   }
 
-  save() {
+  save(immediate = false) {
+    if (immediate) {
+      this.saveImmediate();
+      return;
+    }
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+    }
+    this._saveTimer = setTimeout(() => {
+      this._saveTimer = null;
+      this.saveImmediate();
+    }, 250);
+  }
+
+  saveImmediate() {
+    if (this._saveTimer) {
+      clearTimeout(this._saveTimer);
+      this._saveTimer = null;
+    }
     ensureDirs();
     const dataStr = JSON.stringify(this.data, null, 2);
     const tmpFile = `${DB_FILE}.tmp`;

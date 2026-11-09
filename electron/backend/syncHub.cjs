@@ -135,18 +135,22 @@ const CDP_SYNC_AGENT_SCRIPT = `(function() {
     });
   }, true);
 
-  // 2. Capture Input Value Changes
+  // 2. Capture Input Value Changes (throttled/debounced to avoid CDP command flooding)
+  let lastInputTimer = null;
   document.addEventListener('input', (e) => {
     if (window.__dolphinReplaying || !e.isTrusted) return;
     const el = e.target;
     if (!el) return;
     window.__dolphinLastTarget = el;
-    emitSync({
-      action: 'input',
-      selector: getCssSelector(el),
-      value: el.value !== undefined ? el.value : (el.innerText || ''),
-      isContentEditable: Boolean(el.isContentEditable),
-    });
+    clearTimeout(lastInputTimer);
+    lastInputTimer = setTimeout(() => {
+      emitSync({
+        action: 'input',
+        selector: getCssSelector(el),
+        value: el.value !== undefined ? el.value : (el.innerText || ''),
+        isContentEditable: Boolean(el.isContentEditable),
+      });
+    }, 30);
   }, true);
 
   // 3. Capture Special Keydowns (Enter, Tab, Escape, Backspace, Arrows)
@@ -340,139 +344,149 @@ function handleIncomingUserSyncEvent(sourceProfileId, payload) {
 /**
  * Connect and maintain CDP WebSocket sessions to all page targets of all running profiles
  */
+let isConnectingCdp = false;
+
 async function ensureAllCdpConnections() {
-  const runningMap = getRunningProfilesMap();
+  if (isConnectingCdp) return;
+  isConnectingCdp = true;
+  try {
+    const runningMap = getRunningProfilesMap();
 
-  // Remove closed profiles
-  for (const existingId of Array.from(cdpProfileSessions.keys())) {
-    if (!runningMap.has(existingId)) {
-      const sess = cdpProfileSessions.get(existingId);
-      if (sess) {
-        for (const p of sess.pages.values()) {
-          try { p.ws.close(); } catch (e) {}
-        }
-      }
-      cdpProfileSessions.delete(existingId);
-    }
-  }
-
-  // Attach to all running profiles
-  for (const [profileId, info] of runningMap.entries()) {
-    if (!info || !info.debugPort) continue;
-
-    let session = cdpProfileSessions.get(profileId);
-    if (!session) {
-      session = {
-        debugPort: info.debugPort,
-        pages: new Map(),
-      };
-      cdpProfileSessions.set(profileId, session);
-    }
-
-    try {
-      const res = await fetch(`http://127.0.0.1:${info.debugPort}/json/list`);
-      if (!res.ok) continue;
-      const targets = await res.json();
-      const pageTargets = (targets || []).filter(
-        (t) =>
-          t.type === 'page' &&
-          t.webSocketDebuggerUrl &&
-          !String(t.url || '').startsWith('devtools://') &&
-          !String(t.url || '').startsWith('chrome-extension://')
-      );
-
-      const activeTargetIds = new Set(pageTargets.map((t) => t.id));
-      for (const oldTargetId of Array.from(session.pages.keys())) {
-        if (!activeTargetIds.has(oldTargetId)) {
-          const oldEntry = session.pages.get(oldTargetId);
-          try { oldEntry.ws.close(); } catch (e) {}
-          session.pages.delete(oldTargetId);
-        }
-      }
-
-      // Read profile's fingerprint script (with in-memory cache)
-      let fpScript = fpScriptCache.get(profileId) || '';
-      if (!fpScript) {
-        try {
-          const fpPath = path.join(PROFILES_DIR, profileId, '_anty_core_ext', 'inject_main.js');
-          if (fs.existsSync(fpPath)) {
-            fpScript = fs.readFileSync(fpPath, 'utf8');
-            fpScriptCache.set(profileId, fpScript);
-          }
-        } catch (e) {}
-      }
-
-      for (const target of pageTargets) {
-        if (session.pages.has(target.id)) {
-          const existingPage = session.pages.get(target.id);
-          existingPage.url = target.url;
-          if (existingPage.ws && (existingPage.ws.readyState === WebSocket.OPEN || existingPage.ws.readyState === WebSocket.CONNECTING)) {
-            continue;
+    // Remove closed profiles
+    for (const existingId of Array.from(cdpProfileSessions.keys())) {
+      if (!runningMap.has(existingId)) {
+        const sess = cdpProfileSessions.get(existingId);
+        if (sess) {
+          for (const p of sess.pages.values()) {
+            try { p.ws.close(); } catch (e) {}
           }
         }
+        cdpProfileSessions.delete(existingId);
+      }
+    }
 
-        const ws = new WebSocket(target.webSocketDebuggerUrl);
-        const pageEntry = {
-          ws,
-          targetId: target.id,
-          url: target.url,
-          nextMsgId: 1,
+    // Attach to all running profiles
+    for (const [profileId, info] of runningMap.entries()) {
+      if (!info || !info.debugPort) continue;
+
+      let session = cdpProfileSessions.get(profileId);
+      if (!session) {
+        session = {
+          debugPort: info.debugPort,
+          pages: new Map(),
         };
-        session.pages.set(target.id, pageEntry);
+        cdpProfileSessions.set(profileId, session);
+      }
 
-        ws.on('open', () => {
-          sendCdp(pageEntry, 'Page.enable');
-          sendCdp(pageEntry, 'Runtime.enable');
-          sendCdp(pageEntry, 'Runtime.addBinding', { name: '__dolphinSyncEmit' });
-
-          if (fpScript) {
-            sendCdp(pageEntry, 'Page.addScriptToEvaluateOnNewDocument', { source: fpScript });
-            sendCdp(pageEntry, 'Runtime.evaluate', { expression: fpScript });
-          }
-
-          sendCdp(pageEntry, 'Page.addScriptToEvaluateOnNewDocument', {
-            source: CDP_SYNC_AGENT_SCRIPT,
-          });
-          sendCdp(pageEntry, 'Runtime.evaluate', {
-            expression: CDP_SYNC_AGENT_SCRIPT,
-          });
+      try {
+        const res = await fetch(`http://127.0.0.1:${info.debugPort}/json/list`, {
+          signal: AbortSignal.timeout(2500),
         });
+        if (!res.ok) continue;
+        const targets = await res.json();
+        const pageTargets = (targets || []).filter(
+          (t) =>
+            t.type === 'page' &&
+            t.webSocketDebuggerUrl &&
+            !String(t.url || '').startsWith('devtools://') &&
+            !String(t.url || '').startsWith('chrome-extension://')
+        );
 
-        ws.on('message', (raw) => {
+        const activeTargetIds = new Set(pageTargets.map((t) => t.id));
+        for (const oldTargetId of Array.from(session.pages.keys())) {
+          if (!activeTargetIds.has(oldTargetId)) {
+            const oldEntry = session.pages.get(oldTargetId);
+            try { oldEntry.ws.close(); } catch (e) {}
+            session.pages.delete(oldTargetId);
+          }
+        }
+
+        // Read profile's fingerprint script (with in-memory cache)
+        let fpScript = fpScriptCache.get(profileId) || '';
+        if (!fpScript) {
           try {
-            const msg = JSON.parse(raw.toString());
-            if (msg.method === 'Runtime.bindingCalled' && msg.params?.name === '__dolphinSyncEmit') {
-              const payload = JSON.parse(msg.params.payload);
-              handleIncomingUserSyncEvent(profileId, payload);
-            } else if (
-              msg.method === 'Page.loadEventFired' ||
-              (msg.method === 'Page.frameNavigated' && !msg.params?.frame?.parentId)
-            ) {
-              // Ensure sync script remains active across top-level page transitions
-              sendCdp(pageEntry, 'Runtime.evaluate', {
-                expression: CDP_SYNC_AGENT_SCRIPT,
-              });
+            const fpPath = path.join(PROFILES_DIR, profileId, '_anty_core_ext', 'inject_main.js');
+            if (fs.existsSync(fpPath)) {
+              fpScript = fs.readFileSync(fpPath, 'utf8');
+              fpScriptCache.set(profileId, fpScript);
             }
           } catch (e) {}
-        });
+        }
 
-        ws.on('close', () => {
-          session.pages.delete(target.id);
-        });
+        for (const target of pageTargets) {
+          if (session.pages.has(target.id)) {
+            const existingPage = session.pages.get(target.id);
+            existingPage.url = target.url;
+            if (existingPage.ws && (existingPage.ws.readyState === WebSocket.OPEN || existingPage.ws.readyState === WebSocket.CONNECTING)) {
+              continue;
+            }
+          }
 
-        ws.on('error', () => {
-          session.pages.delete(target.id);
-        });
+          const ws = new WebSocket(target.webSocketDebuggerUrl);
+          const pageEntry = {
+            ws,
+            targetId: target.id,
+            url: target.url,
+            nextMsgId: 1,
+          };
+          session.pages.set(target.id, pageEntry);
+
+          ws.on('open', () => {
+            sendCdp(pageEntry, 'Page.enable');
+            sendCdp(pageEntry, 'Runtime.enable');
+            sendCdp(pageEntry, 'Runtime.addBinding', { name: '__dolphinSyncEmit' });
+
+            if (fpScript) {
+              sendCdp(pageEntry, 'Page.addScriptToEvaluateOnNewDocument', { source: fpScript });
+              sendCdp(pageEntry, 'Runtime.evaluate', { expression: fpScript });
+            }
+
+            sendCdp(pageEntry, 'Page.addScriptToEvaluateOnNewDocument', {
+              source: CDP_SYNC_AGENT_SCRIPT,
+            });
+            sendCdp(pageEntry, 'Runtime.evaluate', {
+              expression: CDP_SYNC_AGENT_SCRIPT,
+            });
+          });
+
+          ws.on('message', (raw) => {
+            try {
+              const msg = JSON.parse(raw.toString());
+              if (msg.method === 'Runtime.bindingCalled' && msg.params?.name === '__dolphinSyncEmit') {
+                const payload = JSON.parse(msg.params.payload);
+                handleIncomingUserSyncEvent(profileId, payload);
+              } else if (
+                msg.method === 'Page.loadEventFired' ||
+                (msg.method === 'Page.frameNavigated' && !msg.params?.frame?.parentId)
+              ) {
+                // Ensure sync script remains active across top-level page transitions
+                sendCdp(pageEntry, 'Runtime.evaluate', {
+                  expression: CDP_SYNC_AGENT_SCRIPT,
+                });
+              }
+            } catch (e) {}
+          });
+
+          ws.on('close', () => {
+            session.pages.delete(target.id);
+          });
+
+          ws.on('error', () => {
+            session.pages.delete(target.id);
+          });
+        }
+      } catch (e) {
+        // Browser might still be starting up
       }
-    } catch (e) {
-      // Browser might still be starting up
     }
+  } finally {
+    isConnectingCdp = false;
   }
 }
 
 // Keep CDP synchronizer connections alive automatically
 let pollCounter = 0;
-setInterval(() => {
+const pollInterval = setInterval(() => {
   pollCounter++;
   const runningMap = getRunningProfilesMap();
   if (runningMap.size === 0) return;
@@ -481,11 +495,36 @@ setInterval(() => {
     ensureAllCdpConnections().catch(() => {});
   }
 }, 1000);
+if (pollInterval.unref) pollInterval.unref();
+
+function isAllowedWsOrigin(origin) {
+  if (!origin) return true; // Direct local/internal connection
+  return (
+    /^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin) ||
+    /^https?:\/\/localhost(:\d+)?$/.test(origin) ||
+    origin.startsWith('tauri://') ||
+    origin.startsWith('app://') ||
+    origin.startsWith('chrome-extension://')
+  );
+}
+
+function invalidateFpScriptCache(profileId = null) {
+  if (profileId) {
+    fpScriptCache.delete(profileId);
+  } else {
+    fpScriptCache.clear();
+  }
+}
 
 function attachSyncWebSocketServer(httpServer) {
   const wss = new WebSocketServer({ noServer: true });
 
   httpServer.on('upgrade', (request, socket, head) => {
+    const origin = request.headers.origin;
+    if (!isAllowedWsOrigin(origin)) {
+      socket.destroy();
+      return;
+    }
     const parsedUrl = url.parse(request.url, true);
     if (parsedUrl.pathname === '/ws-sync') {
       wss.handleUpgrade(request, socket, head, (ws) => {
@@ -680,4 +719,5 @@ module.exports = {
   broadcastSyncCommand,
   distributeDiffText,
   broadcastBookmarks,
+  invalidateFpScriptCache,
 };

@@ -247,25 +247,36 @@ async function downloadFingerprintChromium() {
 }
 
 /**
- * Find an available TCP port on 127.0.0.1
+ * Find an available TCP port on 127.0.0.1 with reservation lock to prevent race conditions
  */
+const reservedPorts = new Set();
+let portAllocationLock = Promise.resolve();
+
 function getFreePort() {
   return new Promise((resolve, reject) => {
-    const activePorts = new Set(Array.from(runningProfiles.values()).map((p) => p.debugPort).filter(Boolean));
-    function tryPort() {
-      const srv = net.createServer();
-      srv.listen(0, '127.0.0.1', () => {
-        const port = srv.address().port;
-        srv.close(() => {
-          if (activePorts.has(port)) {
-            return setImmediate(tryPort);
-          }
-          resolve(port);
-        });
+    portAllocationLock = portAllocationLock.then(() => {
+      return new Promise((res, rej) => {
+        const activePorts = new Set([
+          ...Array.from(runningProfiles.values()).map((p) => p.debugPort).filter(Boolean),
+          ...reservedPorts,
+        ]);
+        function tryPort() {
+          const srv = net.createServer();
+          srv.listen(0, '127.0.0.1', () => {
+            const port = srv.address().port;
+            srv.close(() => {
+              if (activePorts.has(port)) {
+                return setImmediate(tryPort);
+              }
+              reservedPorts.add(port);
+              res(port);
+            });
+          });
+          srv.on('error', rej);
+        }
+        tryPort();
       });
-      srv.on('error', reject);
-    }
-    tryPort();
+    }).then(resolve).catch(reject);
   });
 }
 
@@ -421,14 +432,19 @@ function syncProfileBookmarks(profileDir, bookmarks = [], userExtPaths = []) {
  * Send raw CDP command to browser WebSocket endpoint without calling Runtime.enable
  */
 async function sendRawCdpCommand(debugPort, method, params = {}) {
-  const versionRes = await fetch(`http://127.0.0.1:${debugPort}/json/version`);
+  const versionRes = await fetch(`http://127.0.0.1:${debugPort}/json/version`, {
+    signal: AbortSignal.timeout(3000),
+  });
   const versionInfo = await versionRes.json();
   const wsUrl = versionInfo.webSocketDebuggerUrl;
   if (!wsUrl) throw new Error('No webSocketDebuggerUrl');
 
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(wsUrl);
+    let settled = false;
     const timeout = setTimeout(() => {
+      if (settled) return;
+      settled = true;
       try {
         ws.close();
       } catch (e) {}
@@ -436,20 +452,33 @@ async function sendRawCdpCommand(debugPort, method, params = {}) {
     }, 4000);
 
     ws.on('open', () => {
-      ws.send(JSON.stringify({ id: 1, method, params }));
+      if (settled) return;
+      try {
+        ws.send(JSON.stringify({ id: 1, method, params }));
+      } catch (e) {
+        if (!settled) {
+          settled = true;
+          clearTimeout(timeout);
+          reject(e);
+        }
+      }
     });
     ws.on('message', (data) => {
+      if (settled) return;
       try {
         const msg = JSON.parse(data.toString());
         if (msg.id === 1) {
+          settled = true;
           clearTimeout(timeout);
-          ws.close();
+          try { ws.close(); } catch (e) {}
           if (msg.error) reject(new Error(msg.error.message));
           else resolve(msg.result);
         }
       } catch (e) {}
     });
     ws.on('error', (err) => {
+      if (settled) return;
+      settled = true;
       clearTimeout(timeout);
       reject(err);
     });
@@ -570,10 +599,13 @@ async function launchProfile(profileId, windowBounds = null) {
         anonymizedProxyUrl = await proxyChain.anonymizeProxy(upstreamUrl);
         chromeProxyArg = anonymizedProxyUrl;
       } catch (e) {
-        chromeProxyArg = `${proto}://${effectiveProxy.host}:${effectiveProxy.port}`;
+        const chromeProto = proto === 'socks5' ? 'socks' : proto;
+        chromeProxyArg = `${chromeProto}://${effectiveProxy.host}:${effectiveProxy.port}`;
       }
     } else {
-      chromeProxyArg = `${proto}://${effectiveProxy.host}:${effectiveProxy.port}`;
+      // In Chromium, 'socks://' routes DNS lookups remotely through the SOCKS5 proxy, preventing local DNS leak!
+      const chromeProto = proto === 'socks5' ? 'socks' : proto;
+      chromeProxyArg = `${chromeProto}://${effectiveProxy.host}:${effectiveProxy.port}`;
     }
   }
 
@@ -597,7 +629,7 @@ async function launchProfile(profileId, windowBounds = null) {
     '--disable-gpu-shader-disk-cache',
     '--disk-cache-size=33554432',
     '--media-cache-size=16777216',
-    '--js-flags=--max-old-space-size=512',
+    '--js-flags=--max-old-space-size=2048',
     '--disable-background-timer-throttling',
   ];
 
@@ -627,7 +659,12 @@ async function launchProfile(profileId, windowBounds = null) {
   if (fp.webrtc === 'disabled') {
     args.push('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
   } else if (fp.webrtc === 'altered') {
-    args.push('--force-webrtc-ip-handling-policy=default_public_interface_only');
+    // If a proxy is configured, non-proxied UDP MUST be disabled to avoid STUN leaking real host IP!
+    if (chromeProxyArg) {
+      args.push('--force-webrtc-ip-handling-policy=disable_non_proxied_udp');
+    } else {
+      args.push('--force-webrtc-ip-handling-policy=default_public_interface_only');
+    }
   }
 
   // Window size & position (supports bulk window tiling!)
@@ -643,7 +680,9 @@ async function launchProfile(profileId, windowBounds = null) {
 
   if (chromeProxyArg) {
     args.push(`--proxy-server=${chromeProxyArg}`);
-    args.push('--proxy-bypass-list=<-loopback>');
+    // Bypass loopback EXCEPT allow direct local communication to the Chameleon internal API/WS server
+    const currentApiPort = process.env.CHAMELEON_PORT || '19888';
+    args.push(`--proxy-bypass-list=<-loopback>;127.0.0.1:${currentApiPort};localhost:${currentApiPort}`);
   }
 
   if (state.settings.muteAudio) {
@@ -677,14 +716,27 @@ async function launchProfile(profileId, windowBounds = null) {
 
   args.push(...startUrls);
 
-  if (!fs.existsSync(kernelInfo.activeKernel.path)) {
-    throw new Error('瀏覽器執行檔不存在：' + kernelInfo.activeKernel.path);
+  let proc;
+  try {
+    if (!fs.existsSync(kernelInfo.activeKernel.path)) {
+      throw new Error('瀏覽器執行檔不存在：' + kernelInfo.activeKernel.path);
+    }
+
+    proc = spawn(kernelInfo.activeKernel.path, args, {
+      detached: false,
+      stdio: 'ignore',
+    });
+  } catch (err) {
+    reservedPorts.delete(debugPort);
+    if (anonymizedProxyUrl) {
+      try {
+        await proxyChain.closeAnonymizedProxy(anonymizedProxyUrl, true);
+      } catch (e) {}
+    }
+    throw err;
   }
 
-  const proc = spawn(kernelInfo.activeKernel.path, args, {
-    detached: false,
-    stdio: 'ignore',
-  });
+  reservedPorts.delete(debugPort);
 
   proc.on('error', (err) => {
     console.error('[ChameleonX] Kernel process error for ' + profile.id + ':', err);
@@ -745,7 +797,26 @@ async function launchProfile(profileId, windowBounds = null) {
     }
   })();
 
+  // Periodic background cookie sync while running (every 20s)
+  const cookieSyncTimer = setInterval(async () => {
+    if (!runningProfiles.has(profile.id)) {
+      clearInterval(cookieSyncTimer);
+      return;
+    }
+    try {
+      const res = await sendRawCdpCommand(debugPort, 'Storage.getCookies', {});
+      if (res && Array.isArray(res.cookies) && res.cookies.length > 0) {
+        const existing = profile.cookies || [];
+        if (existing.length !== res.cookies.length || JSON.stringify(existing) !== JSON.stringify(res.cookies)) {
+          profile.cookies = res.cookies;
+          store.save();
+        }
+      }
+    } catch (e) {}
+  }, 20000);
+
   proc.on('exit', async () => {
+    clearInterval(cookieSyncTimer);
     const entry = runningProfiles.get(profile.id);
     runningProfiles.delete(profile.id);
     if (entry && entry.anonymizedProxyUrl) {
@@ -801,11 +872,15 @@ async function stopProfile(profileId) {
   const pidToKill = entry.pid;
   runningProfiles.delete(profileId);
 
-  // Guarantee child renderers and GPU processes are cleaned up on Windows
+  // Guarantee child renderers and GPU processes are cleaned up on Windows and wait for exit
   if (pidToKill && process.platform === 'win32') {
-    setTimeout(() => {
-      execFile('taskkill.exe', ['/PID', String(pidToKill), '/T', '/F'], () => {});
-    }, 1200);
+    await new Promise((resolve) => {
+      execFile('taskkill.exe', ['/PID', String(pidToKill), '/T', '/F'], () => resolve());
+    });
+    // Brief settle delay to allow Windows kernel to release LevelDB / SQLite file handles
+    await new Promise((r) => setTimeout(r, 200));
+  } else if (entry.proc) {
+    try { entry.proc.kill(); } catch (e) {}
   }
 
   if (entry.anonymizedProxyUrl) {
@@ -817,10 +892,17 @@ async function stopProfile(profileId) {
   return { stopped: true, profileId };
 }
 
+let isBatchCancelled = false;
+
+function cancelBatchLaunch() {
+  isBatchCancelled = true;
+}
+
 /**
  * Batch launch multiple profiles with optional window tiling (自動網格排列視窗)
  */
 async function batchLaunchProfiles(profileIds = [], options = {}) {
+  isBatchCancelled = false;
   const state = store.getState();
   const delayMs = Number(options.delayMs ?? state.settings.batchLaunchDelayMs ?? 1000);
   const autoTile = Boolean(options.autoTile ?? state.settings.autoTileWindows);
@@ -834,6 +916,10 @@ async function batchLaunchProfiles(profileIds = [], options = {}) {
 
   const results = [];
   for (let i = 0; i < profileIds.length; i++) {
+    if (isBatchCancelled) {
+      results.push({ id: profileIds[i], ok: false, error: '批量啟動已被使用者手動取消' });
+      continue;
+    }
     const id = profileIds[i];
     let bounds = null;
     if (autoTile) {
@@ -852,7 +938,7 @@ async function batchLaunchProfiles(profileIds = [], options = {}) {
     } catch (err) {
       results.push({ id, ok: false, error: err.message });
     }
-    if (i < profileIds.length - 1 && delayMs > 0) {
+    if (i < profileIds.length - 1 && delayMs > 0 && !isBatchCancelled) {
       await new Promise((r) => setTimeout(r, delayMs));
     }
   }
@@ -900,42 +986,63 @@ function testProxyConnection(proxyConfig) {
     }
     const startTime = Date.now();
     let proto = (proxyConfig.type || 'http').toLowerCase();
-    if (proto === 'sock5' || proto === 'socks') proto = 'socks5';
-    if (proto === 'sock4') proto = 'socks4';
+    if (proto === 'sock5' || proto === 'socks' || proto === 'socks5') proto = 'socks5h';
+    if (proto === 'sock4' || proto === 'socks4') proto = 'socks4a';
     const proxyUrl = `${proto}://${proxyConfig.host}:${proxyConfig.port}`;
     const curlArgs = ['-s', '-m', '7', '-x', proxyUrl];
     if (proxyConfig.username && proxyConfig.password) {
       curlArgs.push('-U', `${proxyConfig.username}:${proxyConfig.password}`);
     }
-    curlArgs.push('http://ip-api.com/json/?fields=status,message,countryCode,country,city,timezone,query,isp');
+    const primaryUrl = 'http://ip-api.com/json/?fields=status,message,countryCode,country,city,timezone,query,isp';
+    const primaryArgs = [...curlArgs, primaryUrl];
 
-    execFile('curl.exe', curlArgs, { timeout: 8000 }, (err, stdout) => {
+    execFile('curl.exe', primaryArgs, { timeout: 8000 }, (err, stdout) => {
       const latency = Date.now() - startTime;
-      if (err || !stdout) {
+      if (!err && stdout) {
+        try {
+          const data = JSON.parse(stdout);
+          if (data && data.status === 'success') {
+            return resolve({
+              ok: true,
+              latency,
+              ip: data.query,
+              country: data.countryCode || 'TW',
+              countryName: data.country || '',
+              city: data.city || '',
+              timezone: data.timezone || 'Asia/Taipei',
+              isp: data.isp || '',
+            });
+          }
+        } catch (e) {}
+      }
+
+      // Fallback to https://api.ipify.org in case ip-api.com was rate-limited (HTTP 429)
+      const fallbackArgs = [...curlArgs, 'https://api.ipify.org?format=json'];
+      execFile('curl.exe', fallbackArgs, { timeout: 7000 }, (fbErr, fbStdout) => {
+        const totalLatency = Date.now() - startTime;
+        if (!fbErr && fbStdout) {
+          try {
+            const fbData = JSON.parse(fbStdout);
+            if (fbData && fbData.ip) {
+              return resolve({
+                ok: true,
+                latency: totalLatency,
+                ip: fbData.ip,
+                country: 'TW',
+                countryName: '連線正常',
+                city: '',
+                timezone: 'Asia/Taipei',
+                isp: '代理已連通',
+              });
+            }
+          } catch (e) {}
+        }
         return resolve({
           ok: false,
-          latency,
-          error: '代理連線逾時或無法連線，請確認代理伺服器是否啟動',
+          latency: totalLatency,
+          error: '代理連線逾時或無法連線，請確認代理伺服器是否正常運行',
         });
-      }
-      try {
-        const data = JSON.parse(stdout);
-        if (data && data.status === 'success') {
-          return resolve({
-            ok: true,
-            latency,
-            ip: data.query,
-            country: data.countryCode || 'TW',
-            countryName: data.country || '',
-            city: data.city || '',
-            timezone: data.timezone || 'Asia/Taipei',
-            isp: data.isp || '',
-          });
-        }
-        return resolve({ ok: false, latency, error: data.message || '代理回應異常' });
-      } catch (e) {
-        return resolve({ ok: false, latency, error: '解析代理回應失敗' });
-      }
+      });
     });
   });
 }
@@ -991,8 +1098,8 @@ async function detectProfileEgressIp(profileId) {
     curlArgs.push('-x', entry.anonymizedProxyUrl);
   } else if (effectiveProxy && effectiveProxy.host && effectiveProxy.port) {
     let proto = (effectiveProxy.type || 'http').toLowerCase();
-    if (proto === 'sock5' || proto === 'socks') proto = 'socks5';
-    if (proto === 'sock4') proto = 'socks4';
+    if (proto === 'sock5' || proto === 'socks' || proto === 'socks5') proto = 'socks5h';
+    if (proto === 'sock4' || proto === 'socks4') proto = 'socks4a';
     const proxyUrl = `${proto}://${effectiveProxy.host}:${effectiveProxy.port}`;
     curlArgs.push('-x', proxyUrl);
     if (effectiveProxy.username && effectiveProxy.password) {
@@ -1109,7 +1216,9 @@ function discoverExistingRunningProfiles() {
 
           // Verify CDP port responds
           try {
-            const res = await fetch(`http://127.0.0.1:${debugPort}/json/version`);
+            const res = await fetch(`http://127.0.0.1:${debugPort}/json/version`, {
+              signal: AbortSignal.timeout(2000),
+            });
             if (res.ok) {
               runningProfiles.set(profileId, {
                 pid: Number(item.ProcessId),
@@ -1163,7 +1272,9 @@ async function tileRunningWindows(options = {}) {
     const colIdx = i % cols;
     const rowIdx = isTopRowMode ? 0 : Math.floor(i / cols) % 3;
     try {
-      const listRes = await fetch(`http://127.0.0.1:${entry.debugPort}/json/list`);
+      const listRes = await fetch(`http://127.0.0.1:${entry.debugPort}/json/list`, {
+        signal: AbortSignal.timeout(2500),
+      });
       const targets = await listRes.json();
       const pageTarget =
         (targets || []).find(
@@ -1306,6 +1417,7 @@ module.exports = {
   launchProfile,
   stopProfile,
   batchLaunchProfiles,
+  cancelBatchLaunch,
   batchStopProfiles,
   exportProfileCookies,
   testProxyConnection,

@@ -144,24 +144,36 @@ async function handleElectronDialog(options = {}) {
   }
 }
 
-function startLocalBackend() {
-  return new Promise((resolve) => {
+function startLocalBackend(startPort = 19888, retries = 20) {
+  return new Promise((resolve, reject) => {
     const expressApp = createApiServer(handleElectronDialog);
     const distPath = path.join(__dirname, '..', 'dist');
     if (fs.existsSync(distPath)) {
       expressApp.use(require('express').static(distPath));
     }
-    apiServerInstance = expressApp.listen(API_PORT, '127.0.0.1', () => {
-      attachSyncWebSocketServer(apiServerInstance);
-      console.log(`[ChameleonX] Server ready at http://127.0.0.1:${API_PORT}`);
-      resolve();
-    });
-    apiServerInstance.on('error', (err) => {
-      if (err.code === 'EADDRINUSE') {
-        console.log(`[ChameleonX] Port ${API_PORT} already active.`);
+
+    function tryListenPort(port, remaining) {
+      const server = expressApp.listen(port, '127.0.0.1', () => {
+        API_PORT = port;
+        process.env.CHAMELEON_PORT = String(port);
+        apiServerInstance = server;
+        attachSyncWebSocketServer(apiServerInstance);
+        console.log(`[ChameleonX] Server ready at http://127.0.0.1:${API_PORT}`);
         resolve();
-      }
-    });
+      });
+
+      server.on('error', (err) => {
+        if (err.code === 'EADDRINUSE' && remaining > 0) {
+          console.warn(`[ChameleonX] Port ${port} is in use, hunting for next available port (${port + 1})...`);
+          tryListenPort(port + 1, remaining - 1);
+        } else {
+          console.error('[ChameleonX] Failed to bind local backend server:', err);
+          reject(err);
+        }
+      });
+    }
+
+    tryListenPort(startPort, retries);
   });
 }
 
@@ -216,6 +228,10 @@ function createWindow() {
     mainWindow.loadURL('http://localhost:5173');
   }
 }
+
+ipcMain.handle('app:getBackendPort', () => {
+  return API_PORT;
+});
 
 ipcMain.handle('dialog:selectDirectory', async () => {
   return handleElectronDialog({ type: 'directory' });
@@ -289,22 +305,34 @@ app.whenReady().then(async () => {
   });
 });
 
-app.on('window-all-closed', async () => {
-  // 在 Windows 系統匣常駐模式下，視窗關閉不代表整個程式退出
-  if (isQuitting) {
-    try {
-      if (apiServerInstance) apiServerInstance.close();
-    } catch (e) {}
-    try {
-      await batchStopProfiles();
-    } catch (e) {}
-    app.quit();
-  }
-});
+let hasCleanedUp = false;
 
-app.on('before-quit', async () => {
-  isQuitting = true;
+async function performGracefulShutdown() {
+  if (hasCleanedUp) return;
+  try {
+    if (apiServerInstance) {
+      apiServerInstance.close();
+      apiServerInstance = null;
+    }
+  } catch (e) {}
   try {
     await batchStopProfiles();
   } catch (e) {}
+  hasCleanedUp = true;
+  app.quit();
+}
+
+app.on('window-all-closed', () => {
+  // 在 Windows 系統匣常駐模式下，視窗關閉不代表整個程式退出
+  if (isQuitting && !hasCleanedUp) {
+    performGracefulShutdown();
+  }
+});
+
+app.on('before-quit', (event) => {
+  if (!hasCleanedUp) {
+    event.preventDefault();
+    isQuitting = true;
+    performGracefulShutdown();
+  }
 });

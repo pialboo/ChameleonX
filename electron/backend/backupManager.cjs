@@ -32,6 +32,12 @@ const EXCLUDE_FILES = new Set([
   'singletonlock',
   'singletoncookie',
   'singletonsocket',
+  'cookies-wal',
+  'cookies-journal',
+  'web data-wal',
+  'web data-journal',
+  'history-wal',
+  'history-journal',
 ]);
 
 function shouldExclude(name, isDirectory) {
@@ -53,6 +59,28 @@ function shouldExclude(name, isDirectory) {
   }
   return false;
 }
+
+function cleanExpiredExports() {
+  try {
+    if (!fs.existsSync(BACKUPS_DIR)) return;
+    const files = fs.readdirSync(BACKUPS_DIR);
+    const now = Date.now();
+    for (const file of files) {
+      if (file.startsWith('_export_')) {
+        const fullPath = path.join(BACKUPS_DIR, file);
+        try {
+          const stat = fs.statSync(fullPath);
+          // Delete temporary export files older than 30 minutes
+          if (now - stat.mtimeMs > 30 * 60 * 1000) {
+            fs.unlinkSync(fullPath);
+          }
+        } catch (e) {}
+      }
+    }
+  } catch (e) {}
+}
+
+cleanExpiredExports();
 
 /**
  * Recursively add directory files into AdmZip archive with path filtering
@@ -78,8 +106,10 @@ function addDirectoryFilesToZip(zip, baseDiskDir, zipPrefix) {
         traverse(fullPath, zipPath);
       } else if (ent.isFile()) {
         try {
-          const content = fs.readFileSync(fullPath);
-          zip.addFile(zipPath.replace(/\\/g, '/'), content);
+          // Skip enormous binary dumps (> 50MB) that are likely corrupted cache files
+          const stat = fs.statSync(fullPath);
+          if (stat.size > 50 * 1024 * 1024) continue;
+          zip.addLocalFile(fullPath, currentZipPrefix ? currentZipPrefix.replace(/\\/g, '/') : '');
         } catch (e) {
           // File may be locked by another process or unreadable, ignore gracefully
         }
@@ -208,38 +238,34 @@ async function createBackup(options = {}) {
   zip.addFile('backup_manifest.json', Buffer.from(JSON.stringify(manifest, null, 2), 'utf8'));
   zip.addFile('data/db_partial.json', Buffer.from(JSON.stringify(partialDb, null, 2), 'utf8'));
 
+  cleanExpiredExports();
+
   const dateStr = timestamp.replace(/[-:]/g, '').slice(0, 15).replace('T', '_');
   const filename = `ChameleonX_Backup_${dateStr}.zip`;
 
+  fs.mkdirSync(BACKUPS_DIR, { recursive: true });
   let finalPath = targetFilePath;
+  let isTempExport = false;
+
   if (saveAsSnapshot) {
-    fs.mkdirSync(BACKUPS_DIR, { recursive: true });
     finalPath = path.join(BACKUPS_DIR, filename);
+  } else if (!finalPath) {
+    isTempExport = true;
+    finalPath = path.join(BACKUPS_DIR, `_export_${Date.now()}_${filename}`);
   }
 
-  let zipBuffer = null;
-  if (finalPath) {
-    fs.mkdirSync(path.dirname(finalPath), { recursive: true });
-    zip.writeZip(finalPath);
-    const stats = fs.statSync(finalPath);
-    return {
-      success: true,
-      filename,
-      filePath: finalPath,
-      size: stats.size,
-      manifest,
-    };
-  } else {
-    zipBuffer = zip.toBuffer();
-    return {
-      success: true,
-      filename,
-      filePath: null,
-      size: zipBuffer.length,
-      manifest,
-      zipBuffer,
-    };
-  }
+  fs.mkdirSync(path.dirname(finalPath), { recursive: true });
+  zip.writeZip(finalPath);
+  const stats = fs.statSync(finalPath);
+
+  return {
+    success: true,
+    filename: isTempExport ? path.basename(finalPath) : filename,
+    filePath: finalPath,
+    downloadUrl: isTempExport ? `/api/backup/download/${path.basename(finalPath)}` : null,
+    size: stats.size,
+    manifest,
+  };
 }
 
 /**
@@ -368,10 +394,13 @@ async function restoreBackup(filePathOrBuffer, restoreOptions = {}, stopProfileF
 
         if (targetProfileIds.has(profId)) {
           const destDir = path.join(PROFILES_DIR, profId);
+          const safeDestDir = path.resolve(destDir) + path.sep;
           const destFile = path.resolve(destDir, relativeFilePath);
-          if (destFile.startsWith(path.resolve(destDir))) {
+          if (destFile.startsWith(safeDestDir)) {
             fs.mkdirSync(path.dirname(destFile), { recursive: true });
             fs.writeFileSync(destFile, entry.getData());
+            // Periodic yield to allow event loop breathing
+            await new Promise((r) => setImmediate(r));
           }
         }
       }
@@ -392,11 +421,14 @@ async function restoreBackup(filePathOrBuffer, restoreOptions = {}, stopProfileF
         const extId = match[1];
         const relativeFilePath = match[2];
         const destDir = path.join(EXTENSIONS_DIR, extId);
+        const safeDestDir = path.resolve(destDir) + path.sep;
         const destFile = path.resolve(destDir, relativeFilePath);
-        if (destFile.startsWith(path.resolve(destDir))) {
+        if (destFile.startsWith(safeDestDir)) {
           fs.mkdirSync(path.dirname(destFile), { recursive: true });
           fs.writeFileSync(destFile, entry.getData());
           extractedExtDirMap.set(extId, destDir);
+          // Periodic yield to allow event loop breathing
+          await new Promise((r) => setImmediate(r));
         }
       }
     }
@@ -598,5 +630,6 @@ module.exports = {
   restoreBackup,
   listSnapshots,
   deleteSnapshot,
+  cleanExpiredExports,
   BACKUPS_DIR,
 };

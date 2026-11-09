@@ -1,7 +1,22 @@
 # ChameleonX Kernel Auto-Downloader for Installer
 param(
-    [string]$TargetDir = "$env:APPDATA\ChameleonX\data\kernel"
+    [string]$TargetDir = ""
 )
+
+if (-not $TargetDir) {
+    # If elevated under Administrator, locate the real interactive logged-in user's AppData
+    $appData = $env:APPDATA
+    try {
+        $explorerProc = Get-CimInstance Win32_Process -Filter "Name = 'explorer.exe'" -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($explorerProc) {
+            $owner = (Invoke-CimMethod -InputObject $explorerProc -MethodName GetOwner -ErrorAction SilentlyContinue).User
+            if ($owner -and (Test-Path "C:\Users\$owner\AppData\Roaming")) {
+                $appData = "C:\Users\$owner\AppData\Roaming"
+            }
+        }
+    } catch {}
+    $TargetDir = Join-Path $appData "ChameleonX\data\kernel"
+}
 
 $Host.UI.RawUI.WindowTitle = "ChameleonX — 正在下載指紋核心..."
 Write-Host "==========================================================" -ForegroundColor Cyan

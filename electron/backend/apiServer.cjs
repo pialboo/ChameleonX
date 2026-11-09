@@ -18,6 +18,7 @@ const {
   launchProfile,
   stopProfile,
   batchLaunchProfiles,
+  cancelBatchLaunch,
   batchStopProfiles,
   exportProfileCookies,
   testProxyConnection,
@@ -32,6 +33,7 @@ const {
   updateSyncState,
   broadcastSyncCommand,
   distributeDiffText,
+  invalidateFpScriptCache,
 } = require('./syncHub.cjs');
 const {
   createBackup,
@@ -92,6 +94,15 @@ function normalizeProtocol(rawProto, fallback = 'http') {
   return fallback;
 }
 
+function safeDecode(str) {
+  if (!str) return '';
+  try {
+    return decodeURIComponent(str);
+  } catch (e) {
+    return str;
+  }
+}
+
 /**
  * Smartly parse any Dolphin Anty supported proxy string format:
  * - sock5://user:password:192.168.2.1:1081
@@ -142,25 +153,45 @@ function parseProxyLine(line, defaultType = 'http', index = 1) {
   let password = '';
 
   if (raw.includes('@')) {
-    const [left, right] = raw.split('@');
-    if (isHostPort(right)) {
-      const [h, pt] = right.split(':');
+    const lastAtIdx = raw.lastIndexOf('@');
+    const firstAtIdx = raw.indexOf('@');
+    const rightOfLast = raw.slice(lastAtIdx + 1);
+    const leftOfFirst = raw.slice(0, firstAtIdx);
+
+    if (isHostPort(rightOfLast)) {
+      const [h, pt] = rightOfLast.split(':');
       host = h;
       port = pt;
-      const [u, ...pRest] = left.split(':');
-      username = decodeURIComponent(u || '');
-      password = decodeURIComponent(pRest.join(':') || '');
-    } else if (isHostPort(left)) {
-      const [h, pt] = left.split(':');
+      const leftPart = raw.slice(0, lastAtIdx);
+      const colonIdx = leftPart.indexOf(':');
+      if (colonIdx !== -1) {
+        username = safeDecode(leftPart.slice(0, colonIdx));
+        password = safeDecode(leftPart.slice(colonIdx + 1));
+      } else {
+        username = safeDecode(leftPart);
+      }
+    } else if (isHostPort(leftOfFirst)) {
+      const [h, pt] = leftOfFirst.split(':');
       host = h;
       port = pt;
-      const [u, ...pRest] = right.split(':');
-      username = decodeURIComponent(u || '');
-      password = decodeURIComponent(pRest.join(':') || '');
+      const rightPart = raw.slice(firstAtIdx + 1);
+      const colonIdx = rightPart.indexOf(':');
+      if (colonIdx !== -1) {
+        username = safeDecode(rightPart.slice(0, colonIdx));
+        password = safeDecode(rightPart.slice(colonIdx + 1));
+      } else {
+        username = safeDecode(rightPart);
+      }
     } else {
-      const [u, ...pRest] = left.split(':');
-      username = decodeURIComponent(u || '');
-      password = decodeURIComponent(pRest.join(':') || '');
+      const left = raw.slice(0, lastAtIdx);
+      const right = raw.slice(lastAtIdx + 1);
+      const colonIdx = left.indexOf(':');
+      if (colonIdx !== -1) {
+        username = safeDecode(left.slice(0, colonIdx));
+        password = safeDecode(left.slice(colonIdx + 1));
+      } else {
+        username = safeDecode(left);
+      }
       const [h, pt] = right.split(':');
       host = h || '';
       port = pt || '';
@@ -174,9 +205,9 @@ function parseProxyLine(line, defaultType = 'http', index = 1) {
       if (isLikelyHost(parts[0]) && isPort(parts[1])) {
         host = parts[0];
         port = parts[1];
-        username = parts[2];
+        username = safeDecode(parts[2]);
       } else if (isLikelyHost(parts[1]) && isPort(parts[2])) {
-        username = parts[0];
+        username = safeDecode(parts[0]);
         host = parts[1];
         port = parts[2];
       }
@@ -188,13 +219,13 @@ function parseProxyLine(line, defaultType = 'http', index = 1) {
       if (lastTwoIsHostPort && !firstIsHostPort) {
         host = parts[parts.length - 2];
         port = parts[parts.length - 1];
-        username = parts[0];
-        password = parts.slice(1, parts.length - 2).join(':');
+        username = safeDecode(parts[0]);
+        password = safeDecode(parts.slice(1, parts.length - 2).join(':'));
       } else {
         host = parts[0];
         port = parts[1];
-        username = parts[2];
-        password = parts.slice(3).join(':');
+        username = safeDecode(parts[2]);
+        password = safeDecode(parts.slice(3).join(':'));
       }
     }
   }
@@ -219,10 +250,59 @@ function parseProxyLine(line, defaultType = 'http', index = 1) {
   };
 }
 
+async function safeRemoveDirWithRetry(targetDir, maxAttempts = 6, delayMs = 250) {
+  if (!fs.existsSync(targetDir)) return;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (attempt === maxAttempts) {
+        console.warn(`[ChameleonX] Locked directory detected, isolating to _trash: ${targetDir}`);
+        try {
+          const trashDir = `${targetDir}_trash_${Date.now()}`;
+          fs.renameSync(targetDir, trashDir);
+          setTimeout(() => {
+            try { fs.rmSync(trashDir, { recursive: true, force: true }); } catch (e) {}
+          }, 5000);
+          return;
+        } catch (renameErr) {
+          console.warn(`[ChameleonX] Failed to isolate directory ${targetDir}:`, renameErr.message);
+        }
+        break;
+      }
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
+
+function isAllowedApiOrigin(origin) {
+  if (!origin) return true; // Direct desktop/electron/curl requests
+  return (
+    /^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin) ||
+    /^https?:\/\/localhost(:\d+)?$/.test(origin) ||
+    origin.startsWith('tauri://') ||
+    origin.startsWith('app://') ||
+    origin.startsWith('vscode-webview://')
+  );
+}
+
 function createApiServer(electronDialogHandler = null) {
   const app = express();
-  app.use(cors());
-  app.use(express.json({ limit: '50mb' }));
+  
+  // Strict Origin Validation & Anti-CSRF protection
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (isAllowedApiOrigin(origin)) {
+          return callback(null, true);
+        }
+        return callback(new Error('CORS blocked: ChameleonX API is only accessible to local desktop applications'));
+      },
+      credentials: true,
+    })
+  );
+  app.use(express.json({ limit: '150mb' }));
 
   // Health check endpoint for port & service ownership verification
   app.get('/api/health', (req, res) => {
@@ -243,6 +323,20 @@ function createApiServer(electronDialogHandler = null) {
       kernelInfo: detectKernels(),
       syncState: getSyncState(),
     });
+  });
+
+  // Lightweight running status polling endpoint (avoids transferring full DB every 2s)
+  app.get('/api/running-status', (req, res) => {
+    res.json({
+      runningMap: getRunningStatusMap(),
+      syncState: getSyncState(),
+    });
+  });
+
+  // Cancel in-flight batch profile launch
+  app.post('/api/profiles/batch-launch/cancel', (req, res) => {
+    cancelBatchLaunch();
+    res.json({ ok: true });
   });
 
   // Generate a fingerprint preview
@@ -370,6 +464,7 @@ function createApiServer(electronDialogHandler = null) {
       cookies: body.cookies !== undefined ? parseCookieInput(body.cookies) : existing.cookies,
     };
     state.profiles[idx] = updated;
+    invalidateFpScriptCache(req.params.id);
     store.save();
     res.json(updated);
   });
@@ -403,16 +498,13 @@ function createApiServer(electronDialogHandler = null) {
   app.delete('/api/profiles/:id', async (req, res) => {
     const state = store.getState();
     const id = req.params.id;
+    invalidateFpScriptCache(id);
     await stopProfile(id);
     state.profiles = state.profiles.filter((p) => p.id !== id);
     store.save();
     const safeId = path.basename(id);
     const dir = path.join(PROFILES_DIR, safeId);
-    if (fs.existsSync(dir)) {
-      try {
-        fs.rmSync(dir, { recursive: true, force: true });
-      } catch (e) {}
-    }
+    await safeRemoveDirWithRetry(dir);
     res.json({ deleted: true, id });
   });
 
@@ -489,6 +581,7 @@ function createApiServer(electronDialogHandler = null) {
     const state = store.getState();
     const { action, profileIds = [], payload = {} } = req.body || {};
     const idSet = new Set(profileIds);
+    const backupProfiles = JSON.parse(JSON.stringify(state.profiles));
 
     try {
       if (action === 'launch') {
@@ -500,17 +593,14 @@ function createApiServer(electronDialogHandler = null) {
         return res.json({ ok: true, results });
       }
       if (action === 'delete') {
+        profileIds.forEach((id) => invalidateFpScriptCache(id));
         await batchStopProfiles(profileIds);
         state.profiles = state.profiles.filter((p) => !idSet.has(p.id));
         store.save();
         for (const id of profileIds) {
           const safeId = path.basename(id);
-    const dir = path.join(PROFILES_DIR, safeId);
-          if (fs.existsSync(dir)) {
-            try {
-              fs.rmSync(dir, { recursive: true, force: true });
-            } catch (e) {}
-          }
+          const dir = path.join(PROFILES_DIR, safeId);
+          await safeRemoveDirWithRetry(dir);
         }
         return res.json({ ok: true, deletedCount: profileIds.length });
       }
@@ -592,6 +682,7 @@ function createApiServer(electronDialogHandler = null) {
               brand: p.fingerprint?.brand || 'Chrome',
               seed: generateSeed(),
             });
+            invalidateFpScriptCache(p.id);
           }
         }
         store.save();
@@ -610,6 +701,10 @@ function createApiServer(electronDialogHandler = null) {
 
       res.status(400).json({ error: `未知的批量操作：${action}` });
     } catch (err) {
+      if (action !== 'launch' && action !== 'stop' && action !== 'delete') {
+        state.profiles = backupProfiles;
+        store.save(true);
+      }
       res.status(500).json({ error: err.message });
     }
   });
@@ -777,6 +872,10 @@ function createApiServer(electronDialogHandler = null) {
         })
       );
       results.push(...chunkResults);
+      if (i + concurrency < targets.length) {
+        // Safe rate-limiting throttle between concurrent batches to prevent API 429
+        await new Promise((r) => setTimeout(r, 200));
+      }
     }
     store.save();
     res.json({ results });
@@ -1092,26 +1191,7 @@ function createApiServer(electronDialogHandler = null) {
     try {
       const options = req.body || {};
       const result = await createBackup(options);
-      if (result.zipBuffer && !result.filePath) {
-        fs.mkdirSync(BACKUPS_DIR, { recursive: true });
-        const tempName = `_export_${Date.now()}_${result.filename}`;
-        const tempPath = path.join(BACKUPS_DIR, tempName);
-        fs.writeFileSync(tempPath, result.zipBuffer);
-        return res.json({
-          success: true,
-          filename: result.filename,
-          downloadUrl: `/api/backup/download/${tempName}`,
-          size: result.size,
-          manifest: result.manifest,
-        });
-      }
-      res.json({
-        success: true,
-        filename: result.filename,
-        filePath: result.filePath,
-        size: result.size,
-        manifest: result.manifest,
-      });
+      res.json(result);
     } catch (err) {
       res.status(500).json({ error: err.message });
     }
