@@ -1,8 +1,8 @@
 # 🦎 變色龍指紋瀏覽器 (ChameleonX) — 全繁體中文防關聯桌面系統
 
-這是一套專為多帳號隔離、電商矩陣、社群營運與手動防關聯打造的**全繁體中文獨立桌面軟體（Electron）**，具備變色龍般靈活的多維指紋擬態與無限制環境管理能力。
+這是一套專為多帳號隔離、電商矩陣、社群營運與手動防關聯打造的**全繁體中文獨立桌面軟體（Tauri v2 + Rust 核心）**，具備變色龍般靈活的多維指紋擬態與無限制環境管理能力。
 
-> 📥 **Windows 安裝程式直接下載**：[點此前往 GitHub Releases 下載最新版安裝檔 (`ChameleonX Setup 1.0.4.exe`)](https://github.com/pialboo/ChameleonX/releases/latest)
+> 📥 **Windows 安裝程式直接下載**：[點此前往 GitHub Releases 下載最新版安裝檔 (`ChameleonX_1.0.4_x64-setup.exe`)](https://github.com/pialboo/ChameleonX/releases/latest)
 
 ## ✨ 核心特色
 
@@ -49,18 +49,18 @@ npm.cmd start
 
 ## 📦 製作與發布 Windows 安裝檔
 
-本軟體採用輕量化安裝檔架構（不隨附大型舊版核心，安裝包僅約 80MB）。使用者安裝後，可在軟體介面內直接在線下載最新版指紋核心。
+本軟體採用輕量化 Tauri v2 架構（安裝包僅約 24MB）。使用者安裝後，可在軟體介面內直接在線下載最新版指紋核心。
 
 ### 製作安裝檔指令
 在專案目錄執行：
 ```bash
 npm.cmd run dist
 ```
-建置完成後，安裝檔將產生於 `release/` 目錄：
-- `release/ChameleonX Setup 1.0.4.exe`（直接提供給其他使用者安裝即可）
+建置完成後，安裝檔將產生於 `src-tauri/target/release/bundle/nsis/` 目錄：
+- `src-tauri/target/release/bundle/nsis/ChameleonX_1.0.4_x64-setup.exe`（直接提供給其他使用者安裝即可）
 
 ### 其他使用者安裝流程
-1. 執行 `ChameleonX Setup 1.0.4.exe` 開始安裝（支援自選路徑、自動建立桌面捷徑）。
+1. 執行 `ChameleonX_1.0.4_x64-setup.exe` 開始安裝（支援自選路徑、自動建立桌面捷徑）。
 2. **安裝過程中彈出核心下載選項**：
    - 點選**【是】**：安裝程式自動從官方 GitHub 下載最新版 Fingerprint-Chromium 並配置完成，安裝後直接開箱即用。
    - 點選**【否】**：跳過下載（適用離線安裝），使用者隨時可在開啟軟體後，至「核心設定」手動下載。

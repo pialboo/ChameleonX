@@ -6,8 +6,8 @@
   "build": {
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
-    "beforeDevCommand": "npm.cmd run dev:vite",
-    "beforeBuildCommand": "node ../scripts/build_sidecar.cjs && npm.cmd run build"
+    "beforeDevCommand": "npm run dev:vite",
+    "beforeBuildCommand": "node scripts/build_sidecar.cjs && npm run build"
   },
   "app": {
     "windows": [

@@ -13,7 +13,8 @@
     "dev": "node scripts/dev.cjs",
     "build": "vite build",
     "start": "electron .",
-    "dist": "npm run build && electron-builder",
+    "dist": "npm run tauri:build",
+    "dist:electron": "npm run build && electron-builder",
     "build:sidecar": "node scripts/build_sidecar.cjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
@@ -78,6 +79,7 @@
   },
   "devDependencies": {
     "@tailwindcss/vite": "^4.0.6",
+    "@tauri-apps/cli": "^2.12.4",
     "@types/node": "^22.13.4",
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
