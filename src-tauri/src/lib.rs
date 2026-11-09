@@ -48,6 +48,41 @@ fn open_external(url: String) -> Result<(), String> {
     Ok(())
 }
 
+fn find_backend_executable() -> Option<std::path::PathBuf> {
+    if let Ok(current_exe) = std::env::current_exe() {
+        if let Some(current_dir) = current_exe.parent() {
+            // 1. Packaged sidecar binary placed in same folder as chameleonx.exe
+            let candidate1 = current_dir.join("chameleon-backend.exe");
+            if candidate1.exists() {
+                return Some(candidate1);
+            }
+
+            // 2. Packaged sidecar binary in resources/
+            let candidate2 = current_dir.join("resources").join("chameleon-backend.exe");
+            if candidate2.exists() {
+                return Some(candidate2);
+            }
+        }
+    }
+
+    // 3. Local build/dev binary in src-tauri/binaries/chameleon-backend-x86_64-pc-windows-msvc.exe
+    let candidate3 = std::path::Path::new("src-tauri")
+        .join("binaries")
+        .join("chameleon-backend-x86_64-pc-windows-msvc.exe");
+    if candidate3.exists() {
+        return Some(candidate3.to_path_buf());
+    }
+
+    // 4. Dist-backend binary: dist-backend/chameleon-backend.exe
+    let candidate4 = std::path::Path::new("dist-backend")
+        .join("chameleon-backend.exe");
+    if candidate4.exists() {
+        return Some(candidate4.to_path_buf());
+    }
+
+    None
+}
+
 fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
     // Check if backend on 127.0.0.1:19888 is already running
     if std::net::TcpStream::connect("127.0.0.1:19888").is_ok() {
@@ -55,6 +90,26 @@ fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
         return;
     }
 
+    // Priority 1: Standalone sidecar binary (No external Node.js required!)
+    if let Some(backend_bin) = find_backend_executable() {
+        println!("[ChameleonX] Spawning standalone backend sidecar: {}", backend_bin.display());
+        let mut cmd = Command::new(&backend_bin);
+        cmd.creation_flags(CREATE_NO_WINDOW);
+
+        match cmd.spawn() {
+            Ok(child) => {
+                println!("[ChameleonX] Standalone backend sidecar process started (PID: {})", child.id());
+                let mut guard = child_holder.lock().unwrap();
+                *guard = Some(child);
+                return;
+            }
+            Err(e) => {
+                eprintln!("[ChameleonX] Failed to spawn sidecar binary, falling back to node: {}", e);
+            }
+        }
+    }
+
+    // Priority 2: Fallback to local node if binary not yet built
     let default_dir = std::path::PathBuf::from(".");
     let current_exe = std::env::current_exe().unwrap_or_default();
     let current_dir = current_exe.parent().unwrap_or(&default_dir);
@@ -70,7 +125,7 @@ fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
         std::path::PathBuf::from("electron/backend/standalone.cjs")
     };
 
-    println!("[ChameleonX] Spawning backend: node {}", script_path.display());
+    println!("[ChameleonX] Spawning backend fallback: node {}", script_path.display());
 
     let mut cmd = Command::new("node");
     cmd.arg(&script_path);

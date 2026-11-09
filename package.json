@@ -14,6 +14,7 @@
     "build": "vite build",
     "start": "electron .",
     "dist": "npm run build && electron-builder",
+    "build:sidecar": "node scripts/build_sidecar.cjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"

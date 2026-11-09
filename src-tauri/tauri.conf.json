@@ -7,7 +7,7 @@
     "frontendDist": "../dist",
     "devUrl": "http://localhost:5173",
     "beforeDevCommand": "npm.cmd run dev:vite",
-    "beforeBuildCommand": "npm.cmd run build"
+    "beforeBuildCommand": "node ../scripts/build_sidecar.cjs && npm.cmd run build"
   },
   "app": {
     "windows": [
@@ -29,6 +29,12 @@
   "bundle": {
     "active": true,
     "targets": ["nsis"],
+    "externalBin": [
+      "binaries/chameleon-backend"
+    ],
+    "resources": [
+      "resources/**/*"
+    ],
     "icon": [
       "icons/icon.ico",
       "icons/icon.png",

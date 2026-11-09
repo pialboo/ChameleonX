@@ -1264,6 +1264,22 @@ async function bringRunningWindowsToTop(options = {}) {
     if (scriptPath.includes('app.asar')) {
       scriptPath = scriptPath.replace('app.asar', 'app.asar.unpacked');
     }
+    if (!fs.existsSync(scriptPath)) {
+      const execDir = path.dirname(process.execPath);
+      const candidates = [
+        path.join(execDir, 'bringToTop.ps1'),
+        path.join(execDir, 'resources', 'bringToTop.ps1'),
+        path.join(execDir, 'electron', 'backend', 'bringToTop.ps1'),
+        path.join(process.cwd(), 'src-tauri', 'resources', 'bringToTop.ps1'),
+        path.join(process.cwd(), 'electron', 'backend', 'bringToTop.ps1'),
+      ];
+      for (const c of candidates) {
+        if (fs.existsSync(c)) {
+          scriptPath = c;
+          break;
+        }
+      }
+    }
     const args = [
       '-NoProfile',
       '-ExecutionPolicy',

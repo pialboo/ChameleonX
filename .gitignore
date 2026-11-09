@@ -6,9 +6,12 @@ node_modules/
 # Production / Bundled Output
 dist/
 dist-electron/
+dist-backend/
 release/
 src-tauri/target/
+src-tauri/binaries/
 target/
+*.exe
 
 # User Data, Logs & Profiles (Sensitive & Runtime generated)
 data/
