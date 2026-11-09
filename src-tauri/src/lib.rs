@@ -152,15 +152,15 @@ fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>, port_holder:
     let current_exe = std::env::current_exe().unwrap_or_default();
     let current_dir = current_exe.parent().unwrap_or(&default_dir);
 
-    let standalone_script = current_dir.join("electron").join("backend").join("standalone.cjs");
-    let dev_script = std::path::Path::new("electron").join("backend").join("standalone.cjs");
+    let standalone_script = current_dir.join("backend").join("standalone.cjs");
+    let dev_script = std::path::Path::new("backend").join("standalone.cjs");
 
     let script_path = if standalone_script.exists() {
         standalone_script
     } else if dev_script.exists() {
         dev_script
     } else {
-        std::path::PathBuf::from("electron/backend/standalone.cjs")
+        std::path::PathBuf::from("backend/standalone.cjs")
     };
 
     println!("[ChameleonX] Spawning backend fallback: node {} --port={}", script_path.display(), target_port);

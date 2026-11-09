@@ -15,7 +15,7 @@ fs.mkdirSync(tauriBinariesDir, { recursive: true });
 fs.mkdirSync(tauriResourcesDir, { recursive: true });
 
 // Step 1: Copy bringToTop.ps1 to resources
-const bringToTopSrc = path.join(projectRoot, 'electron', 'backend', 'bringToTop.ps1');
+const bringToTopSrc = path.join(projectRoot, 'backend', 'bringToTop.ps1');
 if (fs.existsSync(bringToTopSrc)) {
   fs.copyFileSync(bringToTopSrc, path.join(tauriResourcesDir, 'bringToTop.ps1'));
   fs.copyFileSync(bringToTopSrc, path.join(distBackend, 'bringToTop.ps1'));
@@ -25,7 +25,7 @@ if (fs.existsSync(bringToTopSrc)) {
 // Step 2: Bundle backend JavaScript into single file
 console.log('[Sidecar Builder] Bundling backend with esbuild...');
 const bundleOut = path.join(distBackend, 'bundle.cjs');
-const entryPoint = path.join(projectRoot, 'electron', 'backend', 'standalone.cjs');
+const entryPoint = path.join(projectRoot, 'backend', 'standalone.cjs');
 
 execSync(
   `npx esbuild "${entryPoint}" --bundle --platform=node --target=node22 --outfile="${bundleOut}"`,

@@ -1,68 +1,20 @@
 {
   "name": "chameleonx",
   "version": "1.0.4",
-  "description": "變色龍指紋瀏覽器 (ChameleonX) — 全繁體中文防關聯桌面系統 (支援無限制環境、批量操作、擴充功能自動掛載、Fingerprint-Chromium 核心)",
-  "main": "electron/main.cjs",
+  "description": "變色龍指紋瀏覽器 (ChameleonX) — 全繁體中文防關聯桌面系統 (Tauri v2 + Node SEA Sidecar 架構，支援無限制環境、批量操作、擴充功能自動掛載、Fingerprint-Chromium 核心)",
   "repository": {
     "type": "git",
     "url": "https://github.com/pialboo/ChameleonX.git"
   },
   "scripts": {
     "dev:vite": "vite --port 5173",
-    "dev:electron": "electron .",
-    "dev": "node scripts/dev.cjs",
+    "dev": "tauri dev",
     "build": "vite build",
-    "start": "electron .",
     "dist": "npm run tauri:build",
-    "dist:electron": "npm run build && electron-builder",
     "build:sidecar": "node scripts/build_sidecar.cjs",
     "tauri": "tauri",
     "tauri:dev": "tauri dev",
     "tauri:build": "tauri build"
-  },
-  "build": {
-    "appId": "com.chameleonx.app",
-    "productName": "ChameleonX",
-    "compression": "maximum",
-    "directories": {
-      "output": "release"
-    },
-    "files": [
-      "dist/**/*",
-      "electron/**/*",
-      "package.json"
-    ],
-    "asar": true,
-    "asarUnpack": [
-      "electron/backend/bringToTop.ps1"
-    ],
-    "extraResources": [
-      {
-        "from": "scripts/download_kernel_installer.ps1",
-        "to": "scripts/download_kernel_installer.ps1"
-      }
-    ],
-    "win": {
-      "icon": "electron/assets/icon.ico",
-      "target": [
-        {
-          "target": "nsis",
-          "arch": [
-            "x64"
-          ]
-        }
-      ]
-    },
-    "nsis": {
-      "installerIcon": "electron/assets/icon.ico",
-      "uninstallerIcon": "electron/assets/icon.ico",
-      "oneClick": false,
-      "allowToChangeInstallationDirectory": true,
-      "createDesktopShortcut": true,
-      "createStartMenuShortcut": true,
-      "shortcutName": "變色龍指紋瀏覽器",
-      "include": "build/installer.nsh"
-    }
   },
   "dependencies": {
     "@tauri-apps/api": "^2.12.4",
@@ -84,8 +36,6 @@
     "@types/react": "^19.0.8",
     "@types/react-dom": "^19.0.3",
     "@vitejs/plugin-react": "^4.3.4",
-    "electron": "^34.2.0",
-    "electron-builder": "^26.15.3",
     "tailwindcss": "^4.0.6",
     "typescript": "^5.7.3",
     "vite": "^6.1.0"

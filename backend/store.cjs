@@ -1,22 +1,7 @@
 const fs = require('fs');
 const path = require('path');
 
-let app;
-try {
-  const electron = require('electron');
-  app = electron.app;
-} catch (e) {
-  // Not running inside Electron (e.g. standalone node script)
-}
-
 function resolveDataDir() {
-  if (process.env.CHAMELEON_DATA_DIR) {
-    return process.env.CHAMELEON_DATA_DIR;
-  }
-  if (app && app.isPackaged) {
-    // 打包安裝模式下：儲存在使用者專屬的 AppData 目錄，避免 Program Files 權限不足問題
-    return path.join(app.getPath('appData'), 'ChameleonX', 'data');
-  }
   if (process.env.APPDATA) {
     const execPath = (process.execPath || '').toLowerCase();
     const isPackaged =

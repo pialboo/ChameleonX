@@ -1377,9 +1377,9 @@ async function bringRunningWindowsToTop(options = {}) {
       const candidates = [
         path.join(execDir, 'bringToTop.ps1'),
         path.join(execDir, 'resources', 'bringToTop.ps1'),
-        path.join(execDir, 'electron', 'backend', 'bringToTop.ps1'),
+        path.join(execDir, 'backend', 'bringToTop.ps1'),
         path.join(process.cwd(), 'src-tauri', 'resources', 'bringToTop.ps1'),
-        path.join(process.cwd(), 'electron', 'backend', 'bringToTop.ps1'),
+        path.join(process.cwd(), 'backend', 'bringToTop.ps1'),
       ];
       for (const c of candidates) {
         if (fs.existsSync(c)) {
