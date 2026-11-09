@@ -309,7 +309,7 @@ function createApiServer(electronDialogHandler = null) {
     res.json({
       status: 'ok',
       app: 'chameleonx',
-      version: '1.0.3',
+      version: '1.0.4',
       timestamp: Date.now(),
     });
   });
