@@ -94,7 +94,14 @@ fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
     if let Some(backend_bin) = find_backend_executable() {
         println!("[ChameleonX] Spawning standalone backend sidecar: {}", backend_bin.display());
         let mut cmd = Command::new(&backend_bin);
+        cmd.stdin(std::process::Stdio::piped());
         cmd.creation_flags(CREATE_NO_WINDOW);
+
+        #[cfg(not(debug_assertions))]
+        if let Ok(appdata) = std::env::var("APPDATA") {
+            let data_dir = std::path::PathBuf::from(&appdata).join("ChameleonX").join("data");
+            cmd.env("CHAMELEON_DATA_DIR", data_dir.to_string_lossy().to_string());
+        }
 
         match cmd.spawn() {
             Ok(child) => {
@@ -129,7 +136,14 @@ fn start_backend_if_needed(child_holder: Arc<Mutex<Option<Child>>>) {
 
     let mut cmd = Command::new("node");
     cmd.arg(&script_path);
+    cmd.stdin(std::process::Stdio::piped());
     cmd.creation_flags(CREATE_NO_WINDOW);
+
+    #[cfg(not(debug_assertions))]
+    if let Ok(appdata) = std::env::var("APPDATA") {
+        let data_dir = std::path::PathBuf::from(&appdata).join("ChameleonX").join("data");
+        cmd.env("CHAMELEON_DATA_DIR", data_dir.to_string_lossy().to_string());
+    }
 
     match cmd.spawn() {
         Ok(child) => {
@@ -216,6 +230,16 @@ pub fn run() {
                                 *is_quitting_for_tray.lock().unwrap() = true;
                                 if let Ok(mut guard) = child_for_tray.lock() {
                                     if let Some(mut child) = guard.take() {
+                                        // Drop stdin to signal graceful exit to backend
+                                        drop(child.stdin.take());
+                                        // Allow up to 800ms for backend to stop all running browser profiles
+                                        let start = std::time::Instant::now();
+                                        while start.elapsed() < std::time::Duration::from_millis(800) {
+                                            if let Ok(Some(_)) = child.try_wait() {
+                                                break;
+                                            }
+                                            std::thread::sleep(std::time::Duration::from_millis(50));
+                                        }
                                         let _ = child.kill();
                                     }
                                 }

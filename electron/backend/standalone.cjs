@@ -15,6 +15,12 @@ async function fallbackDialogHandler(options = {}) {
 
 const expressApp = createApiServer(fallbackDialogHandler);
 
+// Graceful shutdown endpoint
+expressApp.post('/api/system/shutdown', async (req, res) => {
+  res.json({ success: true, message: 'Shutting down backend and all browser profiles...' });
+  setTimeout(cleanup, 150);
+});
+
 // Serve static frontend assets if dist exists
 const distPath = path.join(__dirname, '..', '..', 'dist');
 if (fs.existsSync(distPath)) {
@@ -35,13 +41,29 @@ server.on('error', (err) => {
   }
 });
 
+let isCleaningUp = false;
 async function cleanup() {
-  console.log('[ChameleonX Backend] Cleaning up and stopping browser profiles...');
+  if (isCleaningUp) return;
+  isCleaningUp = true;
+  console.log('[ChameleonX Backend] Cleaning up and stopping all browser profiles...');
   try {
     await batchStopProfiles();
-  } catch (e) {}
+  } catch (e) {
+    console.warn('[ChameleonX Backend] Cleanup error:', e);
+  }
   process.exit(0);
 }
+
+// Auto-cleanup when parent process (Tauri) closes stdin pipe or terminates
+process.stdin.resume();
+process.stdin.on('end', () => {
+  console.log('[ChameleonX Backend] Parent process closed stdin, shutting down...');
+  cleanup();
+});
+process.stdin.on('close', () => {
+  console.log('[ChameleonX Backend] Stdin closed, shutting down...');
+  cleanup();
+});
 
 process.on('SIGINT', cleanup);
 process.on('SIGTERM', cleanup);

@@ -38,21 +38,39 @@ export const App: React.FC = () => {
       const data = await api.getState();
       setState(data);
       setError(null);
+      return true;
     } catch (err: any) {
       setError(err.message);
+      return false;
     }
   }, []);
 
   useEffect(() => {
-    fetchState();
     let intervalId: any = null;
+    let fastRetryTimer: any = null;
+    let attempts = 0;
+    let isConnected = false;
 
     const startPolling = (ms: number) => {
       if (intervalId) clearInterval(intervalId);
       intervalId = setInterval(fetchState, ms);
     };
 
-    startPolling(2000);
+    // Fast initial retry so UI connects instantaneously the moment the backend port opens
+    const initialConnect = async () => {
+      const ok = await fetchState();
+      if (ok) {
+        isConnected = true;
+        startPolling(2000);
+      } else if (!isConnected && attempts < 15) {
+        attempts++;
+        fastRetryTimer = setTimeout(initialConnect, 150);
+      } else {
+        startPolling(2000);
+      }
+    };
+
+    initialConnect();
 
     const handleVisibility = () => {
       if (document.hidden) {
@@ -69,6 +87,7 @@ export const App: React.FC = () => {
 
     return () => {
       if (intervalId) clearInterval(intervalId);
+      if (fastRetryTimer) clearTimeout(fastRetryTimer);
       document.removeEventListener('visibilitychange', handleVisibility);
       window.removeEventListener('focus', handleVisibility);
     };
