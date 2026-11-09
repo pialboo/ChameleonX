@@ -5,7 +5,6 @@ node_modules/
 
 # Production / Bundled Output
 dist/
-dist-electron/
 dist-backend/
 release/
 src-tauri/target/

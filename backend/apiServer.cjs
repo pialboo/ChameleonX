@@ -287,7 +287,7 @@ function isAllowedApiOrigin(origin) {
   );
 }
 
-function createApiServer(electronDialogHandler = null) {
+function createApiServer(nativeDialogHandler = null) {
   const app = express();
   
   // Strict Origin Validation & Anti-CSRF protection
@@ -985,13 +985,13 @@ function createApiServer(electronDialogHandler = null) {
     res.json({ deleted: true });
   });
 
-  // Native Dialog helper (when running inside Electron)
+  // Native Dialog helper (when running inside desktop app)
   app.post('/api/dialog/select', async (req, res) => {
-    if (!electronDialogHandler) {
-      return res.status(400).json({ error: '目前非 Electron 桌面對話框環境，請直接輸入路徑或拖曳檔案上傳' });
+    if (!nativeDialogHandler) {
+      return res.status(400).json({ error: '目前非桌面對話框環境，請直接輸入路徑或拖曳檔案上傳' });
     }
     try {
-      const selectedPath = await electronDialogHandler(req.body || {});
+      const selectedPath = await nativeDialogHandler(req.body || {});
       res.json({ path: selectedPath });
     } catch (err) {
       res.status(500).json({ error: err.message });

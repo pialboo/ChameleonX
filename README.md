@@ -41,8 +41,8 @@
 # 編譯前端資源
 npm.cmd run build
 
-# 啟動 Electron 桌面視窗
-npm.cmd start
+# 啟動桌面軟體 (開發模式)
+npm.cmd run dev
 ```
 
 ---
