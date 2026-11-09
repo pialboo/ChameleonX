@@ -1,6 +1,6 @@
 [package]
 name = "chameleonx"
-version = "1.0.4"
+version = "1.0.5"
 description = "變色龍指紋瀏覽器 (ChameleonX)"
 authors = ["ChameleonX Team"]
 license = ""

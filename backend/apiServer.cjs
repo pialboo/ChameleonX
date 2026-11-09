@@ -309,7 +309,7 @@ function createApiServer(nativeDialogHandler = null) {
     res.json({
       status: 'ok',
       app: 'chameleonx',
-      version: '1.0.4',
+      version: '1.0.5',
       timestamp: Date.now(),
     });
   });
