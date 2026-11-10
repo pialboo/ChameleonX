@@ -256,6 +256,29 @@ export const api = {
   deleteBookmark: (id: string) =>
     request(`/bookmarks/${id}`, { method: 'DELETE' }),
 
+  createBookmarkFolder: (name: string) =>
+    request<{ ok: boolean; bookmarkFolders: string[] }>('/bookmark-folders', {
+      method: 'POST',
+      body: JSON.stringify({ name }),
+    }),
+
+  renameBookmarkFolder: (oldName: string, newName: string) =>
+    request<{ ok: boolean; bookmarkFolders: string[] }>(
+      `/bookmark-folders/${encodeURIComponent(oldName)}`,
+      {
+        method: 'PUT',
+        body: JSON.stringify({ newName }),
+      }
+    ),
+
+  deleteBookmarkFolder: (name: string, deleteBookmarks = false) =>
+    request<{ ok: boolean; bookmarkFolders: string[] }>(
+      `/bookmark-folders/${encodeURIComponent(name)}?deleteBookmarks=${deleteBookmarks}`,
+      {
+        method: 'DELETE',
+      }
+    ),
+
   syncAllBookmarks: () =>
     request<{ ok: boolean; count: number; liveCount: number }>('/bookmarks/sync-all', { method: 'POST' }),
 

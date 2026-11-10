@@ -313,6 +313,15 @@ function syncProfileBookmarks(profileDir, bookmarks = [], userExtPaths = []) {
     const folderMap = new Map();
     const rootItems = [];
 
+    // Ensure explicit empty folders are also represented
+    const appState = store.getState();
+    (appState.bookmarkFolders || []).forEach((fName) => {
+      const trimmed = (fName || '').trim();
+      if (trimmed && !folderMap.has(trimmed)) {
+        folderMap.set(trimmed, []);
+      }
+    });
+
     (bookmarks || []).forEach((bm) => {
       const fName = (bm.folder || '').trim();
       if (fName) {
@@ -1065,7 +1074,7 @@ function syncAllProfilesBookmarks() {
   try {
     const syncHub = require('./syncHub.cjs');
     if (typeof syncHub.broadcastBookmarks === 'function') {
-      liveCount = syncHub.broadcastBookmarks(bookmarks);
+      liveCount = syncHub.broadcastBookmarks(bookmarks, state.bookmarkFolders || []);
     }
   } catch (e) {}
 

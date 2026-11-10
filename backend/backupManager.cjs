@@ -155,6 +155,7 @@ async function createBackup(options = {}) {
     proxies: includeProxies ? state.proxies || [] : [],
     extensions: includeExtensions ? state.extensions || [] : [],
     bookmarks: includeBookmarks ? state.bookmarks || [] : [],
+    bookmarkFolders: includeBookmarks ? state.bookmarkFolders || [] : [],
     folders: includeFoldersAndTags ? state.folders || [] : [],
     statuses: includeFoldersAndTags ? state.statuses || [] : [],
     tags: includeFoldersAndTags ? state.tags || [] : [],
@@ -307,6 +308,7 @@ function inspectBackup(filePathOrBuffer) {
       proxies: partialDb?.proxies || [],
       extensions: partialDb?.extensions || [],
       bookmarks: partialDb?.bookmarks || [],
+      bookmarkFolders: partialDb?.bookmarkFolders || [],
       folders: partialDb?.folders || [],
       statuses: partialDb?.statuses || [],
       tags: partialDb?.tags || [],
@@ -369,7 +371,10 @@ async function restoreBackup(filePathOrBuffer, restoreOptions = {}, stopProfileF
     if (restoreProfileSettings) state.profiles = [];
     if (restoreProxies) state.proxies = [];
     if (restoreExtensions) state.extensions = [];
-    if (restoreBookmarks) state.bookmarks = [];
+    if (restoreBookmarks) {
+      state.bookmarks = [];
+      state.bookmarkFolders = [];
+    }
     if (restoreFoldersAndTags) {
       state.folders = [];
       state.statuses = [];
@@ -518,6 +523,15 @@ async function restoreBackup(filePathOrBuffer, restoreOptions = {}, stopProfileF
       }
     }
     state.bookmarks = currentBookmarks;
+
+    if (Array.isArray(preview.bookmarkFolders)) {
+      const existingFolders = new Set(state.bookmarkFolders || []);
+      preview.bookmarkFolders.forEach((f) => {
+        const trimmed = (f || '').trim();
+        if (trimmed) existingFolders.add(trimmed);
+      });
+      state.bookmarkFolders = Array.from(existingFolders);
+    }
   }
 
   // 8. Restore Folders, Statuses & Tags

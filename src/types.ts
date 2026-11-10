@@ -180,6 +180,7 @@ export interface AppState {
   folders: FolderItem[];
   tags: string[];
   bookmarks: BookmarkItem[];
+  bookmarkFolders?: string[];
   settings: AppSettings;
   runningMap: Record<string, RunningInfo>;
   kernelInfo: KernelInfo;
@@ -296,6 +297,7 @@ declare global {
       saveFile: (options?: any) => Promise<string | null>;
       windowControl: (action: 'minimize' | 'maximize' | 'close') => Promise<void>;
       openExternal: (url: string) => Promise<void>;
+      getBackendPort?: () => Promise<number | null>;
     };
   }
 }

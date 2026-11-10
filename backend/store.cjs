@@ -56,6 +56,7 @@ function getDefaultData() {
     folders: defaultFolders,
     tags: [],
     bookmarks: [],
+    bookmarkFolders: [],
     settings: {
       kernelMode: 'auto',
       customKernelPath: '',
@@ -103,6 +104,7 @@ class DataStore {
             folders: Array.isArray(parsed.folders) && parsed.folders.length > 0 ? parsed.folders : defaults.folders,
             tags: Array.isArray(parsed.tags) ? parsed.tags : [],
             bookmarks: Array.isArray(parsed.bookmarks) ? parsed.bookmarks : [],
+            bookmarkFolders: Array.isArray(parsed.bookmarkFolders) ? parsed.bookmarkFolders : [],
           };
         } catch (e) {
           console.error(`Failed to parse ${filepath}:`, e);

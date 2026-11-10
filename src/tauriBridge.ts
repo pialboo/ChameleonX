@@ -69,6 +69,14 @@ export function setupTauriBridge(): void {
           console.error('[TauriBridge] windowControl error:', err);
         }
       },
+      getBackendPort: async () => {
+        try {
+          return await invoke<number>('get_backend_port');
+        } catch (err) {
+          console.error('[TauriBridge] getBackendPort error:', err);
+          return null;
+        }
+      },
       openExternal: async (url: string) => {
         try {
           await openUrl(url);

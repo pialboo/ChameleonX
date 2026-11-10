@@ -1112,6 +1112,74 @@ function createApiServer(nativeDialogHandler = null) {
     res.json({ deleted: true });
   });
 
+  // Bookmark Folders
+  app.post('/api/bookmark-folders', (req, res) => {
+    const state = store.getState();
+    if (!Array.isArray(state.bookmarkFolders)) state.bookmarkFolders = [];
+    const name = (req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: '資料夾名稱不能為空' });
+    if (!state.bookmarkFolders.includes(name)) {
+      state.bookmarkFolders.push(name);
+      store.save();
+      try {
+        syncAllProfilesBookmarks();
+      } catch (e) {}
+    }
+    res.json({ ok: true, bookmarkFolders: state.bookmarkFolders });
+  });
+
+  app.put('/api/bookmark-folders/:oldName', (req, res) => {
+    const state = store.getState();
+    if (!Array.isArray(state.bookmarkFolders)) state.bookmarkFolders = [];
+    const oldName = decodeURIComponent(req.params.oldName).trim();
+    const newName = (req.body?.name || req.body?.newName || '').trim();
+    if (!newName) return res.status(400).json({ error: '新資料夾名稱不能為空' });
+
+    const idx = state.bookmarkFolders.indexOf(oldName);
+    if (idx !== -1) {
+      state.bookmarkFolders[idx] = newName;
+    } else if (!state.bookmarkFolders.includes(newName)) {
+      state.bookmarkFolders.push(newName);
+    }
+
+    // Update all bookmarks that were assigned to oldName
+    (state.bookmarks || []).forEach((b) => {
+      if ((b.folder || '').trim() === oldName) {
+        b.folder = newName;
+      }
+    });
+
+    store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
+    res.json({ ok: true, bookmarkFolders: state.bookmarkFolders });
+  });
+
+  app.delete('/api/bookmark-folders/:name', (req, res) => {
+    const state = store.getState();
+    if (!Array.isArray(state.bookmarkFolders)) state.bookmarkFolders = [];
+    const name = decodeURIComponent(req.params.name).trim();
+    state.bookmarkFolders = state.bookmarkFolders.filter((f) => f.trim() !== name);
+
+    const deleteBookmarks = req.query?.deleteBookmarks === 'true';
+    if (deleteBookmarks) {
+      state.bookmarks = (state.bookmarks || []).filter((b) => (b.folder || '').trim() !== name);
+    } else {
+      (state.bookmarks || []).forEach((b) => {
+        if ((b.folder || '').trim() === name) {
+          b.folder = '';
+        }
+      });
+    }
+
+    store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
+    res.json({ ok: true, bookmarkFolders: state.bookmarkFolders });
+  });
+
   app.post('/api/running-profiles/:id/refresh-ip', async (req, res) => {
     try {
       const result = await detectProfileEgressIp(req.params.id);

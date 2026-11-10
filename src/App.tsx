@@ -191,6 +191,7 @@ export const App: React.FC = () => {
       {activeTab === 'bookmarks' && (
         <BookmarksPage
           bookmarks={state.bookmarks}
+          bookmarkFolders={state.bookmarkFolders || []}
           profileCount={state.profiles.length}
           onRefresh={fetchState}
           showToast={showToast}

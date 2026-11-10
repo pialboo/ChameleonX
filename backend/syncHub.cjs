@@ -694,10 +694,11 @@ async function distributeDiffText(lines = [], specificProfileIds = null) {
 /**
  * Broadcast updated bookmarks to all connected running extensions
  */
-function broadcastBookmarks(bookmarks = []) {
+function broadcastBookmarks(bookmarks = [], bookmarkFolders = []) {
   const payload = JSON.stringify({
     type: 'SYNC_BOOKMARKS',
     bookmarks: bookmarks || [],
+    bookmarkFolders: bookmarkFolders || [],
   });
   let sentCount = 0;
   for (const set of connectedWsClients.values()) {
