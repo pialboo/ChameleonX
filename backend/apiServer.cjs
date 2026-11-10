@@ -281,6 +281,7 @@ function isAllowedApiOrigin(origin) {
   return (
     /^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin) ||
     /^https?:\/\/localhost(:\d+)?$/.test(origin) ||
+    /^https?:\/\/([a-z0-9-]+\.)*localhost(:\d+)?$/i.test(origin) ||
     origin.startsWith('tauri://') ||
     origin.startsWith('app://') ||
     origin.startsWith('vscode-webview://')
@@ -297,7 +298,7 @@ function createApiServer(nativeDialogHandler = null) {
         if (isAllowedApiOrigin(origin)) {
           return callback(null, true);
         }
-        return callback(new Error('CORS blocked: ChameleonX API is only accessible to local desktop applications'));
+        return callback(null, false);
       },
       credentials: true,
     })
@@ -309,7 +310,7 @@ function createApiServer(nativeDialogHandler = null) {
     res.json({
       status: 'ok',
       app: 'chameleonx',
-      version: '1.0.5',
+      version: '1.0.6',
       timestamp: Date.now(),
     });
   });

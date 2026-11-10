@@ -502,6 +502,7 @@ function isAllowedWsOrigin(origin) {
   return (
     /^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin) ||
     /^https?:\/\/localhost(:\d+)?$/.test(origin) ||
+    /^https?:\/\/([a-z0-9-]+\.)*localhost(:\d+)?$/i.test(origin) ||
     origin.startsWith('tauri://') ||
     origin.startsWith('app://') ||
     origin.startsWith('chrome-extension://')
