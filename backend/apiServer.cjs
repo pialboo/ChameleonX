@@ -1,0 +1,1376 @@
+const express = require('express');
+const cors = require('cors');
+const fs = require('fs');
+const path = require('path');
+const crypto = require('crypto');
+const { execFile } = require('child_process');
+const { store, PROFILES_DIR, EXTENSIONS_DIR } = require('./store.cjs');
+const { generateFingerprint, generateSeed } = require('./fingerprintGenerator.cjs');
+const {
+  inspectExtensionDir,
+  importExtensionArchive,
+  installFromChromeWebStore,
+  updateExtension,
+} = require('./extensionManager.cjs');
+const {
+  detectKernels,
+  downloadFingerprintChromium,
+  launchProfile,
+  stopProfile,
+  batchLaunchProfiles,
+  cancelBatchLaunch,
+  batchStopProfiles,
+  exportProfileCookies,
+  testProxyConnection,
+  getRunningStatusMap,
+  tileRunningWindows,
+  bringRunningWindowsToTop,
+  syncAllProfilesBookmarks,
+  detectProfileEgressIp,
+} = require('./browserLauncher.cjs');
+const {
+  getSyncState,
+  updateSyncState,
+  broadcastSyncCommand,
+  distributeDiffText,
+  invalidateFpScriptCache,
+} = require('./syncHub.cjs');
+const {
+  createBackup,
+  inspectBackup,
+  restoreBackup,
+  listSnapshots,
+  deleteSnapshot,
+  BACKUPS_DIR,
+} = require('./backupManager.cjs');
+
+/**
+ * Parse Netscape or JSON cookies string into standard Cookie array
+ */
+function parseCookieInput(rawInput) {
+  if (!rawInput) return [];
+  if (Array.isArray(rawInput)) return rawInput;
+  const text = String(rawInput).trim();
+  if (!text) return [];
+
+  // Try JSON first
+  if (text.startsWith('[') || text.startsWith('{')) {
+    try {
+      const parsed = JSON.parse(text);
+      return Array.isArray(parsed) ? parsed : [parsed];
+    } catch (e) {
+      // fall through to Netscape parser
+    }
+  }
+
+  // Netscape HTTP Cookie File format
+  const cookies = [];
+  const lines = text.split(/\r?\n/);
+  for (const line of lines) {
+    const trimmed = line.trim();
+    if (!trimmed || trimmed.startsWith('#')) continue;
+    const parts = trimmed.split('\t');
+    if (parts.length >= 7) {
+      cookies.push({
+        domain: parts[0],
+        httpOnly: parts[1].toUpperCase() === 'TRUE',
+        path: parts[2] || '/',
+        secure: parts[3].toUpperCase() === 'TRUE',
+        expirationDate: Number(parts[4]) || undefined,
+        name: parts[5],
+        value: parts[6],
+      });
+    }
+  }
+  return cookies;
+}
+
+function normalizeProtocol(rawProto, fallback = 'http') {
+  const p = String(rawProto || '').toLowerCase().trim();
+  if (p === 'sock5' || p === 'socks5' || p === 'socks5h' || p === 'socks') return 'socks5';
+  if (p === 'sock4' || p === 'socks4' || p === 'socks4a') return 'socks4';
+  if (p === 'http' || p === 'https') return 'http';
+  if (p === 'ssh') return 'ssh';
+  return fallback;
+}
+
+function safeDecode(str) {
+  if (!str) return '';
+  try {
+    return decodeURIComponent(str);
+  } catch (e) {
+    return str;
+  }
+}
+
+/**
+ * Smartly parse any Dolphin Anty supported proxy string format:
+ * - sock5://user:password:192.168.2.1:1081
+ * - socks5://user:password@192.168.2.1:1081
+ * - host:port:login:password
+ * - login:password:host:port
+ * - login:password@host:port
+ * - host:port@login:password
+ */
+function parseProxyLine(line, defaultType = 'http', index = 1) {
+  let raw = String(line || '').trim();
+  if (!raw) return null;
+
+  let customName = '';
+  if (raw.includes('#')) {
+    const idx = raw.indexOf('#');
+    customName = raw.slice(idx + 1).trim();
+    raw = raw.slice(0, idx).trim();
+  }
+
+  let type = normalizeProtocol(defaultType, 'http');
+  const schemeMatch = raw.match(/^([a-zA-Z0-9+-]+):\/\//);
+  if (schemeMatch) {
+    type = normalizeProtocol(schemeMatch[1], type);
+    raw = raw.slice(schemeMatch[0].length).trim();
+  }
+
+  const isLikelyHost = (str) => {
+    if (!str) return false;
+    return str.includes('.') || str === 'localhost' || /^\[?[0-9a-fA-F:]+\]?$/.test(str);
+  };
+
+  const isPort = (str) => {
+    if (!/^\d{1,5}$/.test(str || '')) return false;
+    const n = Number(str);
+    return n >= 1 && n <= 65535;
+  };
+
+  const isHostPort = (str) => {
+    const parts = str.split(':');
+    if (parts.length !== 2) return false;
+    return isLikelyHost(parts[0]) && isPort(parts[1]);
+  };
+
+  let host = '';
+  let port = '';
+  let username = '';
+  let password = '';
+
+  if (raw.includes('@')) {
+    const lastAtIdx = raw.lastIndexOf('@');
+    const firstAtIdx = raw.indexOf('@');
+    const rightOfLast = raw.slice(lastAtIdx + 1);
+    const leftOfFirst = raw.slice(0, firstAtIdx);
+
+    if (isHostPort(rightOfLast)) {
+      const [h, pt] = rightOfLast.split(':');
+      host = h;
+      port = pt;
+      const leftPart = raw.slice(0, lastAtIdx);
+      const colonIdx = leftPart.indexOf(':');
+      if (colonIdx !== -1) {
+        username = safeDecode(leftPart.slice(0, colonIdx));
+        password = safeDecode(leftPart.slice(colonIdx + 1));
+      } else {
+        username = safeDecode(leftPart);
+      }
+    } else if (isHostPort(leftOfFirst)) {
+      const [h, pt] = leftOfFirst.split(':');
+      host = h;
+      port = pt;
+      const rightPart = raw.slice(firstAtIdx + 1);
+      const colonIdx = rightPart.indexOf(':');
+      if (colonIdx !== -1) {
+        username = safeDecode(rightPart.slice(0, colonIdx));
+        password = safeDecode(rightPart.slice(colonIdx + 1));
+      } else {
+        username = safeDecode(rightPart);
+      }
+    } else {
+      const left = raw.slice(0, lastAtIdx);
+      const right = raw.slice(lastAtIdx + 1);
+      const colonIdx = left.indexOf(':');
+      if (colonIdx !== -1) {
+        username = safeDecode(left.slice(0, colonIdx));
+        password = safeDecode(left.slice(colonIdx + 1));
+      } else {
+        username = safeDecode(left);
+      }
+      const [h, pt] = right.split(':');
+      host = h || '';
+      port = pt || '';
+    }
+  } else {
+    const parts = raw.split(':');
+    if (parts.length === 2) {
+      host = parts[0];
+      port = parts[1];
+    } else if (parts.length === 3) {
+      if (isLikelyHost(parts[0]) && isPort(parts[1])) {
+        host = parts[0];
+        port = parts[1];
+        username = safeDecode(parts[2]);
+      } else if (isLikelyHost(parts[1]) && isPort(parts[2])) {
+        username = safeDecode(parts[0]);
+        host = parts[1];
+        port = parts[2];
+      }
+    } else if (parts.length >= 4) {
+      const firstIsHostPort = isLikelyHost(parts[0]) && isPort(parts[1]);
+      const lastTwoIsHostPort =
+        isLikelyHost(parts[parts.length - 2]) && isPort(parts[parts.length - 1]);
+
+      if (lastTwoIsHostPort && !firstIsHostPort) {
+        host = parts[parts.length - 2];
+        port = parts[parts.length - 1];
+        username = safeDecode(parts[0]);
+        password = safeDecode(parts.slice(1, parts.length - 2).join(':'));
+      } else {
+        host = parts[0];
+        port = parts[1];
+        username = safeDecode(parts[2]);
+        password = safeDecode(parts.slice(3).join(':'));
+      }
+    }
+  }
+
+  if (!host || !port) return null;
+  return {
+    id: 'px-' + crypto.randomBytes(4).toString('hex'),
+    name: customName || `${host}:${port}`,
+    type,
+    host,
+    port: String(port),
+    username,
+    password,
+    changeIpUrl: '',
+    country: '',
+    city: '',
+    timezone: '',
+    lastIp: '',
+    status: 'untested',
+    latency: null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+async function safeRemoveDirWithRetry(targetDir, maxAttempts = 6, delayMs = 250) {
+  if (!fs.existsSync(targetDir)) return;
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      fs.rmSync(targetDir, { recursive: true, force: true });
+      return;
+    } catch (err) {
+      if (attempt === maxAttempts) {
+        console.warn(`[ChameleonX] Locked directory detected, isolating to _trash: ${targetDir}`);
+        try {
+          const trashDir = `${targetDir}_trash_${Date.now()}`;
+          fs.renameSync(targetDir, trashDir);
+          setTimeout(() => {
+            try { fs.rmSync(trashDir, { recursive: true, force: true }); } catch (e) {}
+          }, 5000);
+          return;
+        } catch (renameErr) {
+          console.warn(`[ChameleonX] Failed to isolate directory ${targetDir}:`, renameErr.message);
+        }
+        break;
+      }
+      await new Promise((r) => setTimeout(r, delayMs));
+    }
+  }
+}
+
+function isAllowedApiOrigin(origin) {
+  if (!origin) return true; // Direct desktop/electron/curl requests
+  return (
+    /^https?:\/\/127\.0\.0\.1(:\d+)?$/.test(origin) ||
+    /^https?:\/\/localhost(:\d+)?$/.test(origin) ||
+    /^https?:\/\/([a-z0-9-]+\.)*localhost(:\d+)?$/i.test(origin) ||
+    origin.startsWith('tauri://') ||
+    origin.startsWith('app://') ||
+    origin.startsWith('vscode-webview://')
+  );
+}
+
+function createApiServer(nativeDialogHandler = null) {
+  const app = express();
+  
+  // Strict Origin Validation & Anti-CSRF protection
+  app.use(
+    cors({
+      origin: (origin, callback) => {
+        if (isAllowedApiOrigin(origin)) {
+          return callback(null, true);
+        }
+        return callback(null, false);
+      },
+      credentials: true,
+    })
+  );
+  app.use(express.json({ limit: '150mb' }));
+
+  // Health check endpoint for port & service ownership verification
+  app.get('/api/health', (req, res) => {
+    res.json({
+      status: 'ok',
+      app: 'chameleonx',
+      version: '1.0.0',
+      timestamp: Date.now(),
+    });
+  });
+
+  // Full application state
+  app.get('/api/state', (req, res) => {
+    const state = store.getState();
+    res.json({
+      ...state,
+      runningMap: getRunningStatusMap(),
+      kernelInfo: detectKernels(),
+      syncState: getSyncState(),
+    });
+  });
+
+  // Lightweight running status polling endpoint (avoids transferring full DB every 2s)
+  app.get('/api/running-status', (req, res) => {
+    res.json({
+      runningMap: getRunningStatusMap(),
+      syncState: getSyncState(),
+    });
+  });
+
+  // Cancel in-flight batch profile launch
+  app.post('/api/profiles/batch-launch/cancel', (req, res) => {
+    cancelBatchLaunch();
+    res.json({ ok: true });
+  });
+
+  // Generate a fingerprint preview
+  app.post('/api/fingerprint/generate', (req, res) => {
+    const fp = generateFingerprint(req.body || {});
+    res.json(fp);
+  });
+
+  // Create single profile
+  app.post('/api/profiles', (req, res) => {
+    const state = store.getState();
+    const body = req.body || {};
+    const serialNumber = store.getNextSerialNumber();
+    const id = 'prf-' + crypto.randomBytes(4).toString('hex');
+    const os = body.os || 'windows';
+    const fp = body.fingerprint ? generateFingerprint({ ...body.fingerprint, os }) : generateFingerprint({ os });
+
+    const newProfile = {
+      id,
+      serialNumber,
+      name: body.name || `環境 #${String(serialNumber).padStart(2, '0')}`,
+      folderId: body.folderId || 'fld-all',
+      statusId: body.statusId || (state.statuses[0] ? state.statuses[0].id : 'st-new'),
+      tags: Array.isArray(body.tags) ? body.tags : [],
+      notes: body.notes || '',
+      noteColor: body.noteColor || 'slate',
+      os,
+      startPages: Array.isArray(body.startPages) && body.startPages.length > 0 ? body.startPages : [state.settings.defaultStartPage],
+      proxyMode: body.proxyMode || 'none',
+      proxyId: body.proxyId || '',
+      proxy: body.proxy || null,
+      fingerprint: fp,
+      extensionIds: Array.isArray(body.extensionIds)
+        ? body.extensionIds
+        : state.extensions.filter((e) => e.enabledForAll).map((e) => e.id),
+      cookies: parseCookieInput(body.cookies),
+      lastLaunchedAt: null,
+      launchCount: 0,
+      createdAt: new Date().toISOString(),
+    };
+
+    state.profiles.unshift(newProfile);
+    store.save();
+    res.json(newProfile);
+  });
+
+  // Mass create profiles (批量建立環境)
+  app.post('/api/profiles/mass-create', (req, res) => {
+    const state = store.getState();
+    const body = req.body || {};
+    const count = Math.min(200, Math.max(1, Number(body.count) || 5));
+    const prefix = body.namePrefix || '批量環境';
+    const startNum = Number(body.startNumber) || store.getNextSerialNumber();
+    const os = body.os || 'windows';
+    const brand = body.brand || 'Chrome';
+    const folderId = body.folderId || 'fld-all';
+    const statusId = body.statusId || 'st-new';
+    const tags = Array.isArray(body.tags) ? body.tags : [];
+    const notes = body.notes || '';
+    const proxyAssignMode = body.proxyAssignMode || 'none'; // 'none' | 'sequential' | 'random'
+    const extensionIds = Array.isArray(body.extensionIds)
+      ? body.extensionIds
+      : state.extensions.filter((e) => e.enabledForAll).map((e) => e.id);
+
+    const savedProxies = state.proxies || [];
+    const created = [];
+
+    for (let i = 0; i < count; i++) {
+      const serialNumber = store.getNextSerialNumber();
+      const numLabel = String(startNum + i).padStart(2, '0');
+      const id = 'prf-' + crypto.randomBytes(4).toString('hex');
+
+      let proxyMode = 'none';
+      let proxyId = '';
+      if (savedProxies.length > 0 && proxyAssignMode === 'sequential') {
+        proxyMode = 'saved';
+        proxyId = savedProxies[i % savedProxies.length].id;
+      } else if (savedProxies.length > 0 && proxyAssignMode === 'random') {
+        proxyMode = 'saved';
+        proxyId = savedProxies[Math.floor(Math.random() * savedProxies.length)].id;
+      }
+
+      const prof = {
+        id,
+        serialNumber,
+        name: `${prefix} #${numLabel}`,
+        folderId,
+        statusId,
+        tags: [...tags],
+        notes,
+        noteColor: 'violet',
+        os,
+        startPages: [body.startPage || state.settings.defaultStartPage],
+        proxyMode,
+        proxyId,
+        proxy: null,
+        fingerprint: generateFingerprint({ os, brand, seed: generateSeed() }),
+        extensionIds: [...extensionIds],
+        cookies: [],
+        lastLaunchedAt: null,
+        launchCount: 0,
+        createdAt: new Date().toISOString(),
+      };
+      state.profiles.unshift(prof);
+      created.push(prof);
+    }
+
+    store.save();
+    res.json({ createdCount: created.length, profiles: created });
+  });
+
+  // Update single profile
+  app.put('/api/profiles/:id', (req, res) => {
+    const state = store.getState();
+    const idx = state.profiles.findIndex((p) => p.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: '找不到該環境' });
+
+    const existing = state.profiles[idx];
+    const body = req.body || {};
+    const updated = {
+      ...existing,
+      ...body,
+      id: existing.id,
+      fingerprint: body.fingerprint ? { ...existing.fingerprint, ...body.fingerprint } : existing.fingerprint,
+      cookies: body.cookies !== undefined ? parseCookieInput(body.cookies) : existing.cookies,
+    };
+    state.profiles[idx] = updated;
+    invalidateFpScriptCache(req.params.id);
+    store.save();
+    res.json(updated);
+  });
+
+  // Clone profile
+  app.post('/api/profiles/:id/clone', (req, res) => {
+    const state = store.getState();
+    const orig = state.profiles.find((p) => p.id === req.params.id);
+    if (!orig) return res.status(404).json({ error: '找不到該環境' });
+
+    const serialNumber = store.getNextSerialNumber();
+    const cloned = {
+      ...JSON.parse(JSON.stringify(orig)),
+      id: 'prf-' + crypto.randomBytes(4).toString('hex'),
+      serialNumber,
+      name: `${orig.name} (副本)`,
+      fingerprint: generateFingerprint({
+        ...orig.fingerprint,
+        seed: generateSeed(),
+      }),
+      lastLaunchedAt: null,
+      launchCount: 0,
+      createdAt: new Date().toISOString(),
+    };
+    state.profiles.unshift(cloned);
+    store.save();
+    res.json(cloned);
+  });
+
+  // Delete single profile
+  app.delete('/api/profiles/:id', async (req, res) => {
+    const state = store.getState();
+    const id = req.params.id;
+    invalidateFpScriptCache(id);
+    await stopProfile(id);
+    state.profiles = state.profiles.filter((p) => p.id !== id);
+    store.save();
+    const safeId = path.basename(id);
+    const dir = path.join(PROFILES_DIR, safeId);
+    await safeRemoveDirWithRetry(dir);
+    res.json({ deleted: true, id });
+  });
+
+  // Launch single profile
+  app.post('/api/profiles/:id/launch', async (req, res) => {
+    try {
+      const result = await launchProfile(req.params.id, req.body?.windowBounds || null);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Stop single profile
+  app.post('/api/profiles/:id/stop', async (req, res) => {
+    try {
+      const result = await stopProfile(req.params.id);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Clear profile cache
+  app.post('/api/profiles/:id/clear-cache', (req, res) => {
+    const safeId = path.basename(req.params.id);
+    const defaultDir = path.join(PROFILES_DIR, safeId, 'Default');
+    const cacheDirs = ['Cache', 'Code Cache', 'GPUCache', 'DawnCache'];
+    let cleared = 0;
+    for (const sub of cacheDirs) {
+      const target = path.join(defaultDir, sub);
+      if (fs.existsSync(target)) {
+        try {
+          fs.rmSync(target, { recursive: true, force: true });
+          cleared++;
+        } catch (e) {}
+      }
+    }
+    res.json({ ok: true, cleared });
+  });
+
+  // Open profile directory in Windows Explorer
+  app.post('/api/profiles/:id/open-folder', (req, res) => {
+    const safeId = path.basename(req.params.id);
+    const dir = path.join(PROFILES_DIR, safeId);
+    fs.mkdirSync(dir, { recursive: true });
+    execFile('explorer.exe', [dir]);
+    res.json({ ok: true, path: dir });
+  });
+
+  // Export cookies for profile
+  app.get('/api/profiles/:id/cookies', async (req, res) => {
+    try {
+      const cookies = await exportProfileCookies(req.params.id);
+      res.json({ cookies });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Import cookies for profile
+  app.post('/api/profiles/:id/cookies', (req, res) => {
+    const state = store.getState();
+    const profile = state.profiles.find((p) => p.id === req.params.id);
+    if (!profile) return res.status(404).json({ error: '找不到該環境' });
+    const parsed = parseCookieInput(req.body?.cookies);
+    profile.cookies = parsed;
+    store.save();
+    res.json({ ok: true, count: parsed.length, cookies: parsed });
+  });
+
+  // Bulk Actions on Profiles (批量操作中心)
+  app.post('/api/profiles/bulk', async (req, res) => {
+    const state = store.getState();
+    const { action, profileIds = [], payload = {} } = req.body || {};
+    const idSet = new Set(profileIds);
+    const backupProfiles = JSON.parse(JSON.stringify(state.profiles));
+
+    try {
+      if (action === 'launch') {
+        const results = await batchLaunchProfiles(profileIds, payload);
+        return res.json({ ok: true, results });
+      }
+      if (action === 'stop') {
+        const results = await batchStopProfiles(profileIds);
+        return res.json({ ok: true, results });
+      }
+      if (action === 'delete') {
+        profileIds.forEach((id) => invalidateFpScriptCache(id));
+        await batchStopProfiles(profileIds);
+        state.profiles = state.profiles.filter((p) => !idSet.has(p.id));
+        store.save();
+        for (const id of profileIds) {
+          const safeId = path.basename(id);
+          const dir = path.join(PROFILES_DIR, safeId);
+          await safeRemoveDirWithRetry(dir);
+        }
+        return res.json({ ok: true, deletedCount: profileIds.length });
+      }
+      if (action === 'status') {
+        for (const p of state.profiles) {
+          if (idSet.has(p.id)) p.statusId = payload.statusId;
+        }
+        store.save();
+        return res.json({ ok: true });
+      }
+      if (action === 'folder') {
+        for (const p of state.profiles) {
+          if (idSet.has(p.id)) p.folderId = payload.folderId;
+        }
+        store.save();
+        return res.json({ ok: true });
+      }
+      if (action === 'tags') {
+        const mode = payload.mode || 'add'; // 'add' | 'set' | 'clear'
+        const newTags = Array.isArray(payload.tags) ? payload.tags : [];
+        for (const p of state.profiles) {
+          if (!idSet.has(p.id)) continue;
+          if (mode === 'clear') p.tags = [];
+          else if (mode === 'set') p.tags = [...newTags];
+          else p.tags = Array.from(new Set([...(p.tags || []), ...newTags]));
+        }
+        store.save();
+        return res.json({ ok: true });
+      }
+      if (action === 'proxy') {
+        const mode = payload.mode || 'single'; // 'none' | 'single' | 'sequential' | 'random'
+        const savedProxies = state.proxies || [];
+        let seqIdx = 0;
+        for (const p of state.profiles) {
+          if (!idSet.has(p.id)) continue;
+          if (mode === 'none') {
+            p.proxyMode = 'none';
+            p.proxyId = '';
+            p.proxy = null;
+          } else if (mode === 'single' && payload.proxyId) {
+            p.proxyMode = 'saved';
+            p.proxyId = payload.proxyId;
+          } else if (mode === 'sequential' && savedProxies.length > 0) {
+            p.proxyMode = 'saved';
+            p.proxyId = savedProxies[seqIdx % savedProxies.length].id;
+            seqIdx++;
+          } else if (mode === 'random' && savedProxies.length > 0) {
+            p.proxyMode = 'saved';
+            p.proxyId = savedProxies[Math.floor(Math.random() * savedProxies.length)].id;
+          }
+        }
+        store.save();
+        return res.json({ ok: true });
+      }
+      if (action === 'extensions') {
+        const mode = payload.mode || 'add'; // 'add' | 'set' | 'remove'
+        const extIds = Array.isArray(payload.extensionIds) ? payload.extensionIds : [];
+        for (const p of state.profiles) {
+          if (!idSet.has(p.id)) continue;
+          const current = new Set(p.extensionIds || []);
+          if (mode === 'set') {
+            p.extensionIds = [...extIds];
+          } else if (mode === 'add') {
+            extIds.forEach((id) => current.add(id));
+            p.extensionIds = Array.from(current);
+          } else if (mode === 'remove') {
+            extIds.forEach((id) => current.delete(id));
+            p.extensionIds = Array.from(current);
+          }
+        }
+        store.save();
+        return res.json({ ok: true });
+      }
+      if (action === 'new-fingerprint') {
+        for (const p of state.profiles) {
+          if (idSet.has(p.id)) {
+            p.fingerprint = generateFingerprint({
+              os: p.os || 'windows',
+              brand: p.fingerprint?.brand || 'Chrome',
+              seed: generateSeed(),
+            });
+            invalidateFpScriptCache(p.id);
+          }
+        }
+        store.save();
+        return res.json({ ok: true });
+      }
+      if (action === 'export-cookies') {
+        const exportBundle = {};
+        for (const id of profileIds) {
+          const p = state.profiles.find((x) => x.id === id);
+          if (p) {
+            exportBundle[p.name] = await exportProfileCookies(id);
+          }
+        }
+        return res.json({ ok: true, cookiesByProfile: exportBundle });
+      }
+
+      res.status(400).json({ error: `未知的批量操作：${action}` });
+    } catch (err) {
+      if (action !== 'launch' && action !== 'stop' && action !== 'delete') {
+        state.profiles = backupProfiles;
+        store.save(true);
+      }
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Proxies Management
+  app.post('/api/proxies', (req, res) => {
+    const state = store.getState();
+    const body = req.body || {};
+
+    // Support batch text import (multiple lines with duplicate deduplication)
+    if (body.rawText) {
+      const lines = String(body.rawText).split(/\r?\n/);
+      const existingKeys = new Set(
+        (state.proxies || []).map((p) => `${p.host}:${p.port}`.toLowerCase())
+      );
+      const added = [];
+      let skippedCount = 0;
+      lines.forEach((line, idx) => {
+        const parsed = parseProxyLine(line, body.defaultType || 'http', idx + 1);
+        if (parsed) {
+          const key = `${parsed.host}:${parsed.port}`.toLowerCase();
+          if (existingKeys.has(key)) {
+            skippedCount++;
+          } else {
+            existingKeys.add(key);
+            state.proxies.unshift(parsed);
+            added.push(parsed);
+          }
+        }
+      });
+      store.save();
+      return res.json({ addedCount: added.length, skippedCount, proxies: added });
+    }
+
+    // Single proxy creation (with duplicate host:port prevention)
+    const host = String(body.host || '127.0.0.1').trim();
+    const port = String(body.port || '8080').trim();
+    const duplicate = (state.proxies || []).find(
+      (p) => p.host.toLowerCase() === host.toLowerCase() && String(p.port) === port
+    );
+    if (duplicate) {
+      return res.status(400).json({
+        error: `代理 ${host}:${port} 已存在（名稱：「${duplicate.name}」），請勿重複新增！`,
+      });
+    }
+
+    const px = {
+      id: 'px-' + crypto.randomBytes(4).toString('hex'),
+      name: body.name || `代理 ${host}:${port}`,
+      type: body.type || 'http',
+      host,
+      port,
+      username: body.username || '',
+      password: body.password || '',
+      changeIpUrl: body.changeIpUrl || '',
+      country: body.country || '',
+      city: body.city || '',
+      timezone: body.timezone || '',
+      lastIp: '',
+      status: 'untested',
+      latency: null,
+      createdAt: new Date().toISOString(),
+    };
+    state.proxies.unshift(px);
+    store.save();
+    res.json(px);
+  });
+
+  app.put('/api/proxies/:id', (req, res) => {
+    const state = store.getState();
+    const idx = state.proxies.findIndex((p) => p.id === req.params.id);
+    if (idx === -1) return res.status(404).json({ error: '找不到該代理' });
+    state.proxies[idx] = { ...state.proxies[idx], ...req.body, id: state.proxies[idx].id };
+    store.save();
+    res.json(state.proxies[idx]);
+  });
+
+  app.delete('/api/proxies/:id', (req, res) => {
+    const state = store.getState();
+    const targetId = req.params.id;
+    state.proxies = state.proxies.filter((p) => p.id !== targetId);
+
+    // 連動清除已綁定該代理的環境設定，防止幽靈 ID 導致錯誤直連洩漏
+    let affectedCount = 0;
+    (state.profiles || []).forEach((p) => {
+      if (p.proxyMode === 'saved' && p.proxyId === targetId) {
+        p.proxyMode = 'none';
+        p.proxyId = '';
+        affectedCount++;
+      }
+    });
+
+    store.save();
+    res.json({ deleted: true, affectedCount });
+  });
+
+  app.post('/api/proxies/bulk-delete', (req, res) => {
+    const state = store.getState();
+    const ids = new Set(req.body?.ids || []);
+    state.proxies = state.proxies.filter((p) => !ids.has(p.id));
+
+    // 連動清除已綁定該代理的環境設定
+    let affectedCount = 0;
+    (state.profiles || []).forEach((p) => {
+      if (p.proxyMode === 'saved' && ids.has(p.proxyId)) {
+        p.proxyMode = 'none';
+        p.proxyId = '';
+        affectedCount++;
+      }
+    });
+
+    store.save();
+    res.json({ deleted: true, affectedCount });
+  });
+
+  app.post('/api/proxies/test', async (req, res) => {
+    const state = store.getState();
+    const { proxyId, proxyConfig } = req.body || {};
+    let target = proxyConfig;
+    let savedProxy = null;
+    if (proxyId) {
+      savedProxy = state.proxies.find((p) => p.id === proxyId);
+      target = savedProxy;
+    }
+    if (!target) return res.status(400).json({ error: '找不到要測試的代理設定' });
+
+    const result = await testProxyConnection(target);
+    if (savedProxy) {
+      savedProxy.status = result.ok ? 'online' : 'offline';
+      savedProxy.latency = result.latency;
+      if (result.ok) {
+        savedProxy.lastIp = result.ip;
+        savedProxy.country = result.country;
+        savedProxy.city = result.city;
+        savedProxy.timezone = result.timezone;
+      }
+      store.save();
+    }
+    res.json({ ...result, proxy: savedProxy });
+  });
+
+  app.post('/api/proxies/test-all', async (req, res) => {
+    const state = store.getState();
+    const ids = req.body?.ids;
+    const targets = Array.isArray(ids) && ids.length > 0
+      ? state.proxies.filter((p) => ids.includes(p.id))
+      : state.proxies;
+
+    const results = [];
+    const concurrency = 5;
+    for (let i = 0; i < targets.length; i += concurrency) {
+      const chunk = targets.slice(i, i + concurrency);
+      const chunkResults = await Promise.all(
+        chunk.map(async (px) => {
+          const r = await testProxyConnection(px);
+          px.status = r.ok ? 'online' : 'offline';
+          px.latency = r.latency;
+          if (r.ok) {
+            px.lastIp = r.ip;
+            px.country = r.country;
+            px.city = r.city;
+            px.timezone = r.timezone;
+          }
+          return { id: px.id, ...r };
+        })
+      );
+      results.push(...chunkResults);
+      if (i + concurrency < targets.length) {
+        // Safe rate-limiting throttle between concurrent batches to prevent API 429
+        await new Promise((r) => setTimeout(r, 200));
+      }
+    }
+    store.save();
+    res.json({ results });
+  });
+
+  // Extensions Management
+  app.post('/api/extensions/folder', (req, res) => {
+    try {
+      const { folderPath, category, enabledForAll } = req.body || {};
+      if (!folderPath) return res.status(400).json({ error: '請提供擴充功能資料夾路徑' });
+      const info = inspectExtensionDir(folderPath);
+      const state = store.getState();
+      const newExt = {
+        id: 'ext-' + crypto.randomBytes(4).toString('hex'),
+        name: info.name,
+        version: info.version,
+        description: info.description,
+        path: info.path,
+        iconDataUrl: info.iconDataUrl,
+        enabledForAll: enabledForAll !== false,
+        category: category || '本地資料夾',
+        source: 'folder',
+        createdAt: new Date().toISOString(),
+      };
+      state.extensions.unshift(newExt);
+      store.save();
+      res.json(newExt);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/extensions/archive', (req, res) => {
+    try {
+      const { filePath, fileName, base64Data } = req.body || {};
+      let targetFile = filePath;
+      let tempFile = null;
+
+      if (!targetFile && base64Data) {
+        tempFile = path.join(EXTENSIONS_DIR, `_upload_${Date.now()}_${fileName || 'ext.zip'}`);
+        const cleaned = String(base64Data).replace(/^data:.*?;base64,/, '');
+        fs.writeFileSync(tempFile, Buffer.from(cleaned, 'base64'));
+        targetFile = tempFile;
+      }
+
+      if (!targetFile) return res.status(400).json({ error: '請選擇 .zip 或 .crx 擴充功能檔案' });
+
+      const newExt = importExtensionArchive(targetFile, EXTENSIONS_DIR);
+      if (tempFile && fs.existsSync(tempFile)) {
+        try {
+          fs.unlinkSync(tempFile);
+        } catch (e) {}
+      }
+
+      const state = store.getState();
+      state.extensions.unshift(newExt);
+      store.save();
+      res.json(newExt);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/extensions/webstore', async (req, res) => {
+    try {
+      const { urlOrId } = req.body || {};
+      if (!urlOrId) return res.status(400).json({ error: '請輸入 Chrome 線上應用程式商店網址或擴充功能 ID' });
+      const newExt = await installFromChromeWebStore(urlOrId, EXTENSIONS_DIR);
+      const state = store.getState();
+      // Replace if already exists
+      state.extensions = state.extensions.filter((e) => e.id !== newExt.id);
+      state.extensions.unshift(newExt);
+      store.save();
+      res.json(newExt);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/extensions/:id/update', async (req, res) => {
+    try {
+      const state = store.getState();
+      const ext = state.extensions.find((e) => e.id === req.params.id);
+      if (!ext) return res.status(404).json({ error: '找不到該擴充功能' });
+      const { filePath, fileName, base64Data } = req.body || {};
+      const result = await updateExtension(ext, EXTENSIONS_DIR, { filePath, fileName, base64Data });
+      store.save();
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.put('/api/extensions/:id', (req, res) => {
+    const state = store.getState();
+    const ext = state.extensions.find((e) => e.id === req.params.id);
+    if (!ext) return res.status(404).json({ error: '找不到該擴充功能' });
+    Object.assign(ext, req.body, { id: ext.id });
+    store.save();
+    res.json(ext);
+  });
+
+  app.delete('/api/extensions/:id', (req, res) => {
+    const state = store.getState();
+    state.extensions = state.extensions.filter((e) => e.id !== req.params.id);
+    store.save();
+    res.json({ deleted: true });
+  });
+
+  // Native Dialog helper (when running inside desktop app)
+  app.post('/api/dialog/select', async (req, res) => {
+    if (!nativeDialogHandler) {
+      return res.status(400).json({ error: '目前非桌面對話框環境，請直接輸入路徑或拖曳檔案上傳' });
+    }
+    try {
+      const selectedPath = await nativeDialogHandler(req.body || {});
+      res.json({ path: selectedPath });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // Folders, Statuses, Tags, Bookmarks, Settings
+  app.post('/api/folders', (req, res) => {
+    const state = store.getState();
+    const folder = {
+      id: 'fld-' + crypto.randomBytes(3).toString('hex'),
+      name: req.body?.name || '新資料夾',
+      icon: req.body?.icon || 'Folder',
+    };
+    state.folders.push(folder);
+    store.save();
+    res.json(folder);
+  });
+
+  app.delete('/api/folders/:id', (req, res) => {
+    const state = store.getState();
+    if (req.params.id === 'fld-all') return res.status(400).json({ error: '無法刪除預設全部環境分類' });
+    state.folders = state.folders.filter((f) => f.id !== req.params.id);
+    state.profiles.forEach((p) => {
+      if (p.folderId === req.params.id) p.folderId = 'fld-all';
+    });
+    store.save();
+    res.json({ deleted: true });
+  });
+
+  app.post('/api/statuses', (req, res) => {
+    const state = store.getState();
+    const st = {
+      id: 'st-' + crypto.randomBytes(3).toString('hex'),
+      name: req.body?.name || '自訂狀態',
+      color: req.body?.color || '#8b5cf6',
+    };
+    state.statuses.push(st);
+    store.save();
+    res.json(st);
+  });
+
+  app.delete('/api/statuses/:id', (req, res) => {
+    const state = store.getState();
+    state.statuses = state.statuses.filter((s) => s.id !== req.params.id);
+    store.save();
+    res.json({ deleted: true });
+  });
+
+  app.post('/api/tags', (req, res) => {
+    const state = store.getState();
+    const name = String(req.body?.name || '').trim();
+    if (name && !state.tags.includes(name)) {
+      state.tags.push(name);
+      store.save();
+    }
+    res.json({ tags: state.tags });
+  });
+
+  app.delete('/api/tags/:name', (req, res) => {
+    const state = store.getState();
+    const target = decodeURIComponent(req.params.name);
+    state.tags = state.tags.filter((t) => t !== target);
+    state.profiles.forEach((p) => {
+      p.tags = (p.tags || []).filter((t) => t !== target);
+    });
+    store.save();
+    res.json({ tags: state.tags });
+  });
+
+  app.post('/api/bookmarks/sync-all', (req, res) => {
+    try {
+      const result = syncAllProfilesBookmarks();
+      res.json({ ok: true, ...result });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.post('/api/bookmarks', (req, res) => {
+    const state = store.getState();
+    const bm = {
+      id: 'bm-' + crypto.randomBytes(3).toString('hex'),
+      title: req.body?.title || '常用網站',
+      url: req.body?.url || 'https://',
+      folder: (req.body?.folder || '').trim(),
+    };
+    state.bookmarks.push(bm);
+    store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
+    res.json(bm);
+  });
+
+  app.put('/api/bookmarks/:id', (req, res) => {
+    const state = store.getState();
+    const bm = (state.bookmarks || []).find((b) => b.id === req.params.id);
+    if (!bm) return res.status(404).json({ error: '找不到該書籤' });
+    if (req.body?.title !== undefined) bm.title = req.body.title.trim();
+    if (req.body?.url !== undefined) bm.url = req.body.url.trim();
+    if (req.body?.folder !== undefined) bm.folder = (req.body.folder || '').trim();
+    store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
+    res.json(bm);
+  });
+
+  app.delete('/api/bookmarks/:id', (req, res) => {
+    const state = store.getState();
+    state.bookmarks = state.bookmarks.filter((b) => b.id !== req.params.id);
+    store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
+    res.json({ deleted: true });
+  });
+
+  // Bookmark Folders
+  app.post('/api/bookmark-folders', (req, res) => {
+    const state = store.getState();
+    if (!Array.isArray(state.bookmarkFolders)) state.bookmarkFolders = [];
+    const name = (req.body?.name || '').trim();
+    if (!name) return res.status(400).json({ error: '資料夾名稱不能為空' });
+    if (!state.bookmarkFolders.includes(name)) {
+      state.bookmarkFolders.push(name);
+      store.save();
+      try {
+        syncAllProfilesBookmarks();
+      } catch (e) {}
+    }
+    res.json({ ok: true, bookmarkFolders: state.bookmarkFolders });
+  });
+
+  app.put('/api/bookmark-folders/:oldName', (req, res) => {
+    const state = store.getState();
+    if (!Array.isArray(state.bookmarkFolders)) state.bookmarkFolders = [];
+    const oldName = decodeURIComponent(req.params.oldName).trim();
+    const newName = (req.body?.name || req.body?.newName || '').trim();
+    if (!newName) return res.status(400).json({ error: '新資料夾名稱不能為空' });
+
+    const idx = state.bookmarkFolders.indexOf(oldName);
+    if (idx !== -1) {
+      state.bookmarkFolders[idx] = newName;
+    } else if (!state.bookmarkFolders.includes(newName)) {
+      state.bookmarkFolders.push(newName);
+    }
+
+    // Update all bookmarks that were assigned to oldName
+    (state.bookmarks || []).forEach((b) => {
+      if ((b.folder || '').trim() === oldName) {
+        b.folder = newName;
+      }
+    });
+
+    store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
+    res.json({ ok: true, bookmarkFolders: state.bookmarkFolders });
+  });
+
+  app.delete('/api/bookmark-folders/:name', (req, res) => {
+    const state = store.getState();
+    if (!Array.isArray(state.bookmarkFolders)) state.bookmarkFolders = [];
+    const name = decodeURIComponent(req.params.name).trim();
+    state.bookmarkFolders = state.bookmarkFolders.filter((f) => f.trim() !== name);
+
+    const deleteBookmarks = req.query?.deleteBookmarks === 'true';
+    if (deleteBookmarks) {
+      state.bookmarks = (state.bookmarks || []).filter((b) => (b.folder || '').trim() !== name);
+    } else {
+      (state.bookmarks || []).forEach((b) => {
+        if ((b.folder || '').trim() === name) {
+          b.folder = '';
+        }
+      });
+    }
+
+    store.save();
+    try {
+      syncAllProfilesBookmarks();
+    } catch (e) {}
+    res.json({ ok: true, bookmarkFolders: state.bookmarkFolders });
+  });
+
+  app.post('/api/running-profiles/:id/refresh-ip', async (req, res) => {
+    try {
+      const result = await detectProfileEgressIp(req.params.id);
+      res.json({ ok: Boolean(result), ...(result || {}) });
+    } catch (e) {
+      res.status(500).json({ ok: false, error: e.message });
+    }
+  });
+
+  app.put('/api/settings', (req, res) => {
+    const state = store.getState();
+    state.settings = { ...state.settings, ...(req.body || {}) };
+    store.save();
+    res.json({ settings: state.settings, kernelInfo: detectKernels() });
+  });
+
+  // Kernel Management
+  app.get('/api/kernel/status', (req, res) => {
+    res.json(detectKernels());
+  });
+
+  app.post('/api/kernel/download', async (req, res) => {
+    const status = await downloadFingerprintChromium();
+    res.json(status);
+  });
+
+  // Synchronizer (多視窗同步操作) Endpoints
+  app.post('/api/sync/state', (req, res) => {
+    const updated = updateSyncState(req.body || {});
+    res.json(updated);
+  });
+
+  app.post('/api/sync/command', async (req, res) => {
+    try {
+      const body = req.body || {};
+      const payload =
+        typeof body.payload === 'string'
+          ? { action: body.payload, url: typeof body.profileIds === 'string' ? body.profileIds : body.url }
+          : body.payload || { action: body.action, url: body.url, text: body.text };
+      const profileIds = Array.isArray(body.profileIds) ? body.profileIds : null;
+      const result = await broadcastSyncCommand(payload, profileIds);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/sync/distribute-text', async (req, res) => {
+    try {
+      const { lines, profileIds } = req.body || {};
+      const result = await distributeDiffText(Array.isArray(lines) ? lines : [], profileIds);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/sync/tile-windows', async (req, res) => {
+    try {
+      const result = await tileRunningWindows(req.body || {});
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/sync/bring-to-top', async (req, res) => {
+    try {
+      const result = await bringRunningWindowsToTop(req.body || {});
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  // --- Backup & Restore Routes ---
+  app.post('/api/backup/create', async (req, res) => {
+    try {
+      const options = req.body || {};
+      const result = await createBackup(options);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/backup/download/:filename', (req, res) => {
+    try {
+      const safeName = path.basename(req.params.filename);
+      const filePath = path.join(BACKUPS_DIR, safeName);
+      if (!fs.existsSync(filePath)) {
+        return res.status(404).json({ error: '找不到該備份檔案' });
+      }
+      const downloadName = safeName.startsWith('_export_')
+        ? safeName.replace(/^_export_\d+_/, '')
+        : safeName;
+      res.download(filePath, downloadName, (err) => {
+        if (safeName.startsWith('_export_')) {
+          try {
+            fs.unlinkSync(filePath);
+          } catch (e) {}
+        }
+      });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/backup/inspect', (req, res) => {
+    try {
+      const { filePath, base64Data } = req.body || {};
+      let input = null;
+      if (filePath) {
+        if (!fs.existsSync(filePath)) {
+          return res.status(404).json({ error: '找不到指定的檔案路徑' });
+        }
+        input = filePath;
+      } else if (base64Data) {
+        const cleaned = String(base64Data).replace(/^data:.*?;base64,/, '');
+        input = Buffer.from(cleaned, 'base64');
+      } else {
+        return res.status(400).json({ error: '請提供備份檔案路徑或檔案內容' });
+      }
+
+      const result = inspectBackup(input);
+      res.json(result);
+    } catch (err) {
+      res.status(400).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/backup/restore', async (req, res) => {
+    try {
+      const { filePath, base64Data, options } = req.body || {};
+      let input = null;
+      if (filePath) {
+        if (!fs.existsSync(filePath)) {
+          return res.status(404).json({ error: '找不到指定的備份檔案路徑' });
+        }
+        input = filePath;
+      } else if (base64Data) {
+        const cleaned = String(base64Data).replace(/^data:.*?;base64,/, '');
+        input = Buffer.from(cleaned, 'base64');
+      } else {
+        return res.status(400).json({ error: '請提供要還原的備份檔案' });
+      }
+
+      const result = await restoreBackup(input, options || {}, stopProfile);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.get('/api/backup/snapshots', (req, res) => {
+    try {
+      const list = listSnapshots();
+      res.json(list);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.delete('/api/backup/snapshots/:filename', (req, res) => {
+    try {
+      const ok = deleteSnapshot(req.params.filename);
+      if (!ok) return res.status(404).json({ error: '找不到該快照檔案' });
+      res.json({ success: true });
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  app.post('/api/backup/snapshots/:filename/restore', async (req, res) => {
+    try {
+      const safeName = path.basename(req.params.filename);
+      const fullPath = path.join(BACKUPS_DIR, safeName);
+      if (!fs.existsSync(fullPath)) {
+        return res.status(404).json({ error: '找不到該快照檔案' });
+      }
+      const options = req.body?.options || {};
+      const result = await restoreBackup(fullPath, options, stopProfile);
+      res.json(result);
+    } catch (err) {
+      res.status(500).json({ error: err.message });
+    }
+  });
+
+  return app;
+}
+
+module.exports = {
+  createApiServer,
+};

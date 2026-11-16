@@ -1,0 +1,17 @@
+<svg viewBox="0 0 100 100" fill="none" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <linearGradient id="cxTitaniumGradA" x1="10" y1="15" x2="90" y2="85" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#10B981" />
+      <stop offset="55%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#64748B" />
+    </linearGradient>
+    <linearGradient id="cxTitaniumEyeA" x1="60" y1="28" x2="76" y2="44" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#38BDF8" />
+      <stop offset="100%" stop-color="#0284C7" />
+    </linearGradient>
+  </defs>
+  <path d="M 68 22 C 82 22 88 32 88 42 C 88 53 80 60 70 60 C 58 60 52 50 44 50 C 38 50 34 54 34 60 C 34 66 39 71 45 71 C 51 71 54 67 54 63 C 54 61 52 59 50 59 C 48 59 47 60 47 61 C 47 62 48 64 45 64 C 42 64 40 62 40 60 C 40 57 42 56 44 56 C 50 56 55 64 68 64 C 82 64 94 54 94 40 C 94 25 80 15 62 15 C 44 15 28 26 22 42 C 16 58 20 76 34 86 C 48 96 66 94 78 86 C 81 84 82 81 80 79 C 78 77 75 77 73 79 C 63 86 48 88 37 80 C 26 72 23 57 28 44 C 33 30 46 22 68 22 Z" fill="url(#cxTitaniumGradA)" />
+  <circle cx="68" cy="36" r="9" fill="#0C0E12" stroke="url(#cxTitaniumEyeA)" stroke-width="2.5" />
+  <circle cx="70" cy="35" r="4.5" fill="url(#cxTitaniumEyeA)" />
+  <circle cx="71.5" cy="33.5" r="1.5" fill="#FFFFFF" />
+</svg>
